@@ -2,6 +2,13 @@
 FastAPI服务接口
 提供RESTful API供前端调用
 """
+import sys
+from pathlib import Path
+
+# 确保无论从哪个工作目录启动（如 `python api/main.py`），
+# 项目根都在 sys.path 上，使 `from config.settings` / `from modules` 稳定可用。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import List
