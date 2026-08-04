@@ -43,8 +43,6 @@ class Settings:
         _PROJECT_ROOT,
     )
     COLLECTION_NAME = os.getenv("COLLECTION_NAME", "psychology_knowledge")
-    CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "800"))
-    CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "150"))
     RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "5"))
     RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "3"))
 
