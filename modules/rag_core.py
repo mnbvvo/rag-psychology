@@ -32,7 +32,7 @@ class PsychologyRAG:
             openai_api_key=settings.OPENAI_API_KEY,
             openai_api_base=settings.OPENAI_API_BASE,
             temperature=settings.CHAT_TEMPERATURE,
-            max_tokens=2000,
+            max_tokens=4096,
         )
 
         # 检索相关性分数（供低相关判定使用）
