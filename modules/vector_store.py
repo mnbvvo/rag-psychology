@@ -2,11 +2,43 @@
 向量存储和检索模块
 基于Chroma实现心理学知识的存储和检索
 """
+import time
+import threading
 from typing import List, Optional, Dict
 from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from config.settings import settings
+
+# 线程隔离的 embedding 耗时存放区，供检索阶段拆分 embed/retrieve 耗时。
+_embed_tls = threading.local()
+
+
+class TimedOpenAIEmbeddings(OpenAIEmbeddings):
+    """OpenAIEmbeddings 的子类，仅用于给 embed_query/embed_documents 包一层耗时统计。
+
+    耗时按线程隔离存放在 _embed_tls.embed_ms（每次调用覆盖）。
+    即使是并发请求共用同一实例，各线程读到的也是自己那次调用的耗时。
+    """
+
+    def embed_query(self, text: str, *args, **kwargs):
+        t = time.perf_counter()
+        try:
+            return super().embed_query(text, *args, **kwargs)
+        finally:
+            _embed_tls.embed_ms = (time.perf_counter() - t) * 1000
+
+    def embed_documents(self, texts, *args, **kwargs):
+        t = time.perf_counter()
+        try:
+            return super().embed_documents(texts, *args, **kwargs)
+        finally:
+            _embed_tls.embed_ms = (time.perf_counter() - t) * 1000
+
+
+def get_last_embed_ms() -> float:
+    """读取当前线程最近一次 embedding 调用的耗时（毫秒）。"""
+    return getattr(_embed_tls, "embed_ms", 0.0) or 0.0
 
 
 class PsychologyVectorStore:
@@ -21,14 +53,16 @@ class PsychologyVectorStore:
         self.collection_name = collection_name or settings.COLLECTION_NAME
         self.persist_directory = persist_directory or settings.CHROMA_PERSIST_DIR
 
-        # 初始化OpenAI Embeddings
-        self.embeddings = OpenAIEmbeddings(
+        # 初始化OpenAI Embeddings（子类化以实现 embedding 耗时统计）
+        self.embeddings = TimedOpenAIEmbeddings(
             model=embedding_model or settings.EMBEDDING_MODEL,
             openai_api_key=settings.OPENAI_API_KEY,
-            openai_api_base=settings.OPENAI_API_BASE,
+            base_url=settings.OPENAI_API_BASE,
             tiktoken_enabled=False,
             check_embedding_ctx_length=False,
             chunk_size=10,
+            timeout=30,       # 上游挂起时及时失败，避免导入/检索永久阻塞
+            max_retries=2,    # 瞬时网络/限流错误自动重试
         )
 
         # 初始化Chroma向量存储

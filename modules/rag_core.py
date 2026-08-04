@@ -2,6 +2,7 @@
 RAG核心流程
 实现青少年心理领域的检索增强生成
 """
+import time
 from typing import List, Dict, Optional, TypedDict
 from langchain_openai import ChatOpenAI
 from langchain_core.documents import Document
@@ -31,9 +32,11 @@ class PsychologyRAG:
         self.llm = ChatOpenAI(
             model=settings.CHAT_MODEL,
             openai_api_key=settings.OPENAI_API_KEY,
-            openai_api_base=settings.OPENAI_API_BASE,
+            base_url=settings.OPENAI_API_BASE,
             temperature=settings.CHAT_TEMPERATURE,
             max_tokens=4096,
+            timeout=30,       # 上游挂起时及时失败，避免请求永久阻塞
+            max_retries=2,    # 瞬时网络/限流错误自动重试
         )
 
         # 检索相关性分数（供低相关判定使用）
@@ -45,10 +48,18 @@ class PsychologyRAG:
             return {"age_group": age_group}
         return None
 
-    def retrieve(self, question: str, age_group: str = "teen") -> List[Document]:
+    def retrieve(
+        self,
+        question: str,
+        age_group: str = "teen",
+        timings: Optional[Dict] = None,
+    ) -> List[Document]:
         """检索相关文档：多召回 -> 阈值 -> 重排序截断。"""
+        from modules.vector_store import get_last_embed_ms
+
         filter_dict = self._build_age_filter(age_group)
 
+        t0 = time.perf_counter()
         if settings.SEARCH_TYPE == "mmr":
             # 最大边际相关：在相关性基础上提升多样性
             docs = self.vectorstore.max_marginal_relevance_search(
@@ -76,6 +87,14 @@ class PsychologyRAG:
             docs = [doc for doc, _ in top]
             self._last_scores = [score for _, score in top]
 
+        # 拆分 embed 与 retrieve：检索总耗时 - embedding 耗时
+        search_total_ms = (time.perf_counter() - t0) * 1000
+        embed_ms = get_last_embed_ms()
+        retrieve_ms = max(0.0, search_total_ms - embed_ms)
+        if timings is not None:
+            timings["embed"] = embed_ms
+            timings["retrieve"] = retrieve_ms
+
         return docs
 
     def generate(
@@ -85,6 +104,7 @@ class PsychologyRAG:
         age_group: str = "teen",
         system_prompt_override: Optional[str] = None,
         prompt_id: Optional[str] = None,
+        timings: Optional[Dict] = None,
     ) -> Dict:
         """基于检索到的内容生成回答
 
@@ -119,8 +139,11 @@ class PsychologyRAG:
         # 创建链
         chain = rag_prompt | self.llm | StrOutputParser()
 
-        # 生成回答
+        # 生成回答（LLM 调用是主要耗时来源，单独计时）
+        t0 = time.perf_counter()
         answer = chain.invoke({"question": question})
+        if timings is not None:
+            timings["llm"] = (time.perf_counter() - t0) * 1000
 
         # 构建来源信息
         sources = []
@@ -144,13 +167,14 @@ class PsychologyRAG:
         age_group: str = "teen",
         system_prompt_override: Optional[str] = None,
         prompt_id: Optional[str] = None,
+        timings: Optional[Dict] = None,
     ) -> RAGState:
         """异步执行完整的RAG流程"""
         # 检索
-        context = self.retrieve(question, age_group)
+        context = self.retrieve(question, age_group, timings=timings)
 
         # 生成
-        result = self.generate(question, context, age_group, system_prompt_override, prompt_id)
+        result = self.generate(question, context, age_group, system_prompt_override, prompt_id, timings=timings)
 
         return RAGState(
             question=question,
@@ -166,13 +190,14 @@ class PsychologyRAG:
         age_group: str = "teen",
         system_prompt_override: Optional[str] = None,
         prompt_id: Optional[str] = None,
+        timings: Optional[Dict] = None,
     ) -> RAGState:
         """同步执行完整的RAG流程"""
         # 检索
-        context = self.retrieve(question, age_group)
+        context = self.retrieve(question, age_group, timings=timings)
 
         # 生成
-        result = self.generate(question, context, age_group, system_prompt_override, prompt_id)
+        result = self.generate(question, context, age_group, system_prompt_override, prompt_id, timings=timings)
 
         return RAGState(
             question=question,

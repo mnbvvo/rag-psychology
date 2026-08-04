@@ -29,44 +29,48 @@ def _resolve_path(value: str, base: Path) -> str:
 class Settings:
     """系统配置类"""
 
-    # DashScope（通义千问兼容模式）配置
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-    OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    # 接口与密钥（密钥为必填，写在 .env；base 地址随部署环境覆盖）
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")  # 必填：OpenAI 兼容接口密钥
+    OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")  # 兼容模式基地址
 
-    # 模型配置
-    CHAT_MODEL = os.getenv("CHAT_MODEL", "qwen3.5-35b-a3b")
-    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v3")
+    # 模型配置（更换模型/部署环境时在 .env 覆盖；不填则用下列默认值）
+    CHAT_MODEL = os.getenv("CHAT_MODEL", "qwen3.5-35b-a3b")  # 对话生成模型
+    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v3")  # 向量化模型（与 chroma_db 绑定，换模型须 --reset 重导）
 
     # RAG 配置（路径锚定到项目根目录，避免 cwd 不同导致找不到文件/库）
     CHROMA_PERSIST_DIR = _resolve_path(
         os.getenv("CHROMA_PERSIST_DIR", "chroma_db"),
         _PROJECT_ROOT,
-    )
-    COLLECTION_NAME = os.getenv("COLLECTION_NAME", "psychology_knowledge")
-    RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "5"))
-    RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "3"))
+    )  # 本地向量库持久化目录
+    COLLECTION_NAME = os.getenv("COLLECTION_NAME", "psychology_knowledge")  # Chroma 集合名
+    RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "5"))  # 最终喂给模型的最相关文档数
+    RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "3"))  # 相似度召回后重排截断保留的条数
 
     # 检索策略
-    FETCH_K = int(os.getenv("FETCH_K", "10"))
-    SEARCH_TYPE = os.getenv("SEARCH_TYPE", "similarity")
-    MMR_LAMBDA = float(os.getenv("MMR_LAMBDA", "0.5"))
-    MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.0"))
-    AGE_GROUPS = ["child", "early_teen", "teen", "late_teen"]
+    FETCH_K = int(os.getenv("FETCH_K", "10"))  # 相似度检索初召回候选数（应 >= RETRIEVAL_TOP_K）
+    SEARCH_TYPE = os.getenv("SEARCH_TYPE", "similarity")  # similarity 或 mmr（最大边际相关，兼顾多样性）
+    MMR_LAMBDA = float(os.getenv("MMR_LAMBDA", "0.5"))  # mmr 模式下多样性权重：0=最多样，1=最相关
+    MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.0"))  # 相关性下限，0=不启用（建议 0.2~0.35）
+    AGE_GROUPS = ["child", "early_teen", "teen", "late_teen"]  # 年龄分桶（检索过滤 + 回答语气适配）
 
     # 生成参数
-    CHAT_TEMPERATURE = float(os.getenv("CHAT_TEMPERATURE", "0.3"))
+    CHAT_TEMPERATURE = float(os.getenv("CHAT_TEMPERATURE", "0.3"))  # 生成温度，事实/建议类问答偏低以减少幻觉
 
     # 安全配置（路径锚定到项目根目录，避免 cwd 不同导致找不到文件）
     CRISIS_KEYWORDS_FILE = _resolve_path(
         os.getenv("CRISIS_KEYWORDS_FILE", "config/crisis_keywords.json"),
         _PROJECT_ROOT,
-    )
-    SAFETY_CHECK_ENABLED = os.getenv("SAFETY_CHECK_ENABLED", "true").lower() == "true"
+    )  # 危机关键词 + 等级 + 热线定义文件
+    SAFETY_CHECK_ENABLED = os.getenv("SAFETY_CHECK_ENABLED", "true").lower() == "true"  # 是否启用关键词级危机检测
 
-    # 服务配置
-    HOST = os.getenv("HOST", "0.0.0.0")
-    PORT = int(os.getenv("PORT", "8000"))
-    DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+    # 限流（仅 POST /api/query，内存级；多进程部署需改用共享存储）
+    RATE_LIMIT_TIMES = int(os.getenv("RATE_LIMIT_TIMES", "20"))  # 时间窗内单客户端最大请求数
+    RATE_LIMIT_SECONDS = int(os.getenv("RATE_LIMIT_SECONDS", "60"))  # 限流时间窗长度（秒）
+
+    # 服务配置（心理应用含危机内容，默认只绑本机，避免暴露到局域网）
+    HOST = os.getenv("HOST", "127.0.0.1")  # 监听地址；切勿改为 0.0.0.0 以免暴露到局域网
+    PORT = int(os.getenv("PORT", "8000"))  # 监听端口
+    DEBUG = os.getenv("DEBUG", "false").lower() == "true"  # 调试模式（开启时 uvicorn --reload 且单进程）
 
     # 项目根目录
     PROJECT_ROOT = _PROJECT_ROOT

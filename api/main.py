@@ -9,8 +9,13 @@ from pathlib import Path
 # 项目根都在 sys.path 上，使 `from config.settings` / `from modules` 稳定可用。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from fastapi import FastAPI, HTTPException
+import time
+from collections import defaultdict, deque
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -37,6 +42,30 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# 简单内存限流：仅针对 POST /api/query，防止单客户端刷接口
+_rate_limit_store: dict[str, deque] = defaultdict(deque)
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    if request.url.path == "/api/query" and request.method == "POST":
+        client = request.client.host if request.client else "unknown"
+        now = time.time()
+        window = settings.RATE_LIMIT_SECONDS
+        limit = settings.RATE_LIMIT_TIMES
+        bucket = _rate_limit_store[client]
+        # 丢弃时间窗之外的旧请求记录
+        while bucket and bucket[0] <= now - window:
+            bucket.popleft()
+        if len(bucket) >= limit:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "请求过于频繁，请稍后再试。"},
+            )
+        bucket.append(now)
+    return await call_next(request)
 
 
 class QueryRequest(BaseModel):
@@ -73,7 +102,8 @@ async def query(request: QueryRequest):
     接收用户问题，返回RAG生成的回答
     """
     try:
-        result = rag_system.query(
+        result = await run_in_threadpool(
+            rag_system.query,
             question=request.question,
             age_group=request.age_group,
             check_safety=True,
@@ -82,8 +112,9 @@ async def query(request: QueryRequest):
         )
 
         return QueryResponse(**result)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # 不把内部异常细节（路径/堆栈）回传给客户端
+        raise HTTPException(status_code=500, detail="内部处理失败，请稍后重试。")
 
 @app.get("/api/health")
 async def health_check():

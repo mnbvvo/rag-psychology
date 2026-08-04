@@ -26,7 +26,11 @@ class SafetyChecker:
             return json.load(f)
 
     def check_text(self, text: str) -> Dict:
-        """检测文本中的危机信号"""
+        """检测文本中的危机信号。
+
+        每个关键词都在 config 中显式归属 high/medium/low 之一，
+        直接遍历 crisis_levels 判断，避免「列了关键词却没配等级」导致被兜底判为 low。
+        """
         if not self.enabled:
             return {"is_crisis": False, "level": "none", "keywords_found": []}
 
@@ -34,17 +38,12 @@ class SafetyChecker:
         keywords_found = []
         level_scores = {"high": 0, "medium": 0, "low": 0}
 
-        # 检测关键词
-        for keyword in self.crisis_data["crisis_keywords"]:
-            if keyword in text_lower:
-                # 确定危机等级
-                level = self._get_crisis_level(keyword)
-                if level:
+        # 按等级遍历所有关键词，命中即记录其所属等级
+        for level in ("high", "medium", "low"):
+            for keyword in self.crisis_data.get("crisis_levels", {}).get(level, []):
+                if keyword and keyword in text_lower:
                     level_scores[level] += 1
-                    keywords_found.append({
-                        "keyword": keyword,
-                        "level": level,
-                    })
+                    keywords_found.append({"keyword": keyword, "level": level})
 
         # 确定最高危机等级
         crisis_level = self._determine_crisis_level(level_scores)
@@ -60,13 +59,6 @@ class SafetyChecker:
                 crisis_level, ""
             ),
         }
-
-    def _get_crisis_level(self, keyword: str) -> Optional[str]:
-        """获取关键词的危机等级"""
-        for level, keywords in self.crisis_data["crisis_levels"].items():
-            if keyword in keywords:
-                return level
-        return "low"  # 默认低等级
 
     def _determine_crisis_level(self, level_scores: Dict) -> str:
         """根据得分确定最终危机等级"""

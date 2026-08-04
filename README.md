@@ -2,8 +2,6 @@
 
 本地运行的检索增强生成（RAG）系统，面向青少年及家庭心理知识问答。知识以结构化「卡片」形式入库，检索后由大模型基于卡片内容生成回答，并内置关键词级危机干预检测。
 
-> 范围说明：知识卡片覆盖**婴儿至青年**阶段（含家长指导），并非严格限定 6–18 岁。安全检测仅为原型级防护，详见文末「安全与危机干预」与「备注」。
-
 技术栈：FastAPI + LangChain + Chroma（本地持久化向量库）+ OpenAI 兼容接口（默认使用通义千问 / DashScope 兼容模式）。
 
 ## 快速开始
@@ -42,33 +40,19 @@ requirements.txt        Python 依赖
 
 ## 配置
 
-复制 `.env.example` 为 `.env` 并填入 `OPENAI_API_KEY` 等（**.env 含密钥，勿提交**，已被 .gitignore 忽略）。所有检索/生成参数均有合理默认值，不填也能跑；完整变量见 `.env.example`。
+复制 `.env.example` 为 `.env` 并填入密钥与必要的环境项（**.env 含密钥，勿提交**，已被 .gitignore 忽略）。
+
+**配置分层原则**：`.env` 只放「密钥 + 随部署环境变化、需要覆盖默认值的值」；所有检索 / 生成 / 安全 / 服务等调参都有合理默认值，写在 `config/settings.py`（含中文注释），不填也能跑。
+
+`.env` 通常只要三行（其余一律走默认值）：
 
 ```dotenv
 OPENAI_API_KEY=你的API密钥
-OPENAI_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1  # OpenAI 兼容接口
-
-CHAT_MODEL=qwen3.6-flash
-EMBEDDING_MODEL=text-embedding-v3
-
-CHROMA_PERSIST_DIR=./chroma_db
-COLLECTION_NAME=psychology_knowledge
-
-RETRIEVAL_TOP_K=5          # 召回候选数
-RERANK_TOP_K=3             # 最终喂给模型的文档数
-FETCH_K=10                 # 相似度检索召回候选数
-SEARCH_TYPE=similarity     # similarity 或 mmr（最大边际相关，兼顾多样性）
-MMR_LAMBDA=0.5             # mmr 模式下多样性权重，0=最多样，1=最相关
-MIN_RELEVANCE_SCORE=0.0    # 相关性下限，0=不启用（建议 0.2~0.35）
-CHAT_TEMPERATURE=0.3       # 事实/建议类问答，温度偏低以减少幻觉
-
-CRISIS_KEYWORDS_FILE=./config/crisis_keywords.json
-SAFETY_CHECK_ENABLED=true
-
-HOST=127.0.0.1
-PORT=8000
-DEBUG=false
+OPENAI_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1  # OpenAI 兼容接口（换 MaaS 端点时覆盖）
+CHAT_MODEL=qwen3.6-flash                                                                # 对话模型（实际部署按需覆盖，例如 deepseek-v4-flash）
 ```
+
+> 想调 `RETRIEVAL_TOP_K` / `RERANK_TOP_K` / `MMR_LAMBDA` / `MIN_RELEVANCE_SCORE` / `CHAT_TEMPERATURE` / `RATE_LIMIT_*` 等参数？它们都在 `config/settings.py` 有默认值与注释，需要时**任选其一**覆盖：直接改 `settings.py`，或在 `.env` 加同名键覆盖（键名见 `settings.py` 的 `os.getenv("X", 默认值)`）。完整可覆盖变量清单见 `.env.example`。
 
 > ⚠️ **安全提醒**：`HOST` 默认 `127.0.0.1`（仅本机）。**切勿改成 `0.0.0.0`**，避免暴露到局域网。
 
