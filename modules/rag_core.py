@@ -8,6 +8,7 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from modules.vector_store import PsychologyVectorStore
+from modules.prompt_store import build_system_prompt
 from config.settings import settings
 
 
@@ -37,32 +38,6 @@ class PsychologyRAG:
 
         # 检索相关性分数（供低相关判定使用）
         self._last_scores: list[float] | None = None
-
-    def _get_age_specific_prompt(self, age_group: str) -> str:
-        """根据年龄段获取合适的prompt风格"""
-        prompts = {
-            "child": (
-                "你是一位温柔、有耐心的儿童心理辅导老师。"
-                "请用简单、温暖、容易理解的语言回答，避免使用复杂术语。"
-                "多使用比喻和故事来解释，让孩子感到被理解和关爱。"
-            ),
-            "early_teen": (
-                "你是一位理解青少年的心理辅导老师。"
-                "请用友善、尊重的语气回答，避免说教。"
-                "认可他们的感受，给予实用建议，让他们知道寻求帮助是正常的。"
-            ),
-            "teen": (
-                "你是一位专业的青少年心理咨询师。"
-                "请用平等、理解的态度回答，尊重他们的想法和感受。"
-                "提供专业但易懂的解释，引导他们积极思考。"
-            ),
-            "late_teen": (
-                "你是一位资深心理咨询师。"
-                "请用专业但亲切的方式回答，把他们当作成年人对待。"
-                "提供深入的心理学知识，帮助他们自我成长和问题解决。"
-            ),
-        }
-        return prompts.get(age_group, prompts["teen"])
 
     def _build_age_filter(self, age_group: str | None) -> dict | None:
         """仅当 age_group 命中已知分桶时才构建元数据过滤条件。"""
@@ -108,39 +83,36 @@ class PsychologyRAG:
         question: str,
         context: List[Document],
         age_group: str = "teen",
+        system_prompt_override: Optional[str] = None,
+        prompt_id: Optional[str] = None,
     ) -> Dict:
-        """基于检索到的内容生成回答"""
+        """基于检索到的内容生成回答
+
+        system_prompt_override：非 None 时，使用传入文本作为系统提示词基础，
+        便于前端在不落盘的情况下预览/对比不同提示词的效果。
+        prompt_id：指定使用提示词库中的某条提示词（与 override 互斥，override 优先）。
+        """
         # 构建上下文文本
         context_text = "\n\n".join(
             [f"[{i+1}] {doc.page_content}" for i, doc in enumerate(context)]
         )
 
-        # 获取年龄段特定的系统提示
-        age_prompt = self._get_age_specific_prompt(age_group)
-
         # 低相关提示：检索结果偏弱时，要求模型如实说明而非编造
-        low_relevance_note = ""
-        if not context:
-            low_relevance_note = (
-                "\n\n【重要】本次未检索到足够相关的参考资料。"
-                "若无法直接、有据地回答，请明确说明“我目前没有足够的信息来回答这个问题”，"
-                "不要编造内容。\n"
-            )
+        low_relevance = not context
+
+        # 构建系统提示词（base + 年龄段片段 + 参考资料），
+        # 提示词内容来自 config/system_prompt.json，可由前端实时修改并同步。
+        system_prompt = build_system_prompt(
+            age_group=age_group,
+            context_text=context_text,
+            low_relevance=low_relevance,
+            system_prompt_override=system_prompt_override,
+            prompt_id=prompt_id,
+        )
 
         # 构建RAG prompt
         rag_prompt = ChatPromptTemplate.from_messages([
-            ("system", f"""你是专业的青少年心理咨询师。{age_prompt}
-
-【重要原则】
-1. 仅基于提供的参考资料回答，不要编造信息
-2. 如果资料不足以回答问题，请诚实地说"我目前没有足够的信息来回答这个问题"
-3. 始终提供温暖、专业的态度
-4. 如果涉及安全问题，优先提供危机干预资源
-5. 在回答末尾标注信息来源编号（如[1][2]）
-{low_relevance_note}
-参考资料:
-{context_text}
-"""),
+            ("system", system_prompt),
             ("human", "{question}"),
         ])
 
@@ -170,13 +142,15 @@ class PsychologyRAG:
         self,
         question: str,
         age_group: str = "teen",
+        system_prompt_override: Optional[str] = None,
+        prompt_id: Optional[str] = None,
     ) -> RAGState:
         """异步执行完整的RAG流程"""
         # 检索
         context = self.retrieve(question, age_group)
 
         # 生成
-        result = self.generate(question, context, age_group)
+        result = self.generate(question, context, age_group, system_prompt_override, prompt_id)
 
         return RAGState(
             question=question,
@@ -190,13 +164,15 @@ class PsychologyRAG:
         self,
         question: str,
         age_group: str = "teen",
+        system_prompt_override: Optional[str] = None,
+        prompt_id: Optional[str] = None,
     ) -> RAGState:
         """同步执行完整的RAG流程"""
         # 检索
         context = self.retrieve(question, age_group)
 
         # 生成
-        result = self.generate(question, context, age_group)
+        result = self.generate(question, context, age_group, system_prompt_override, prompt_id)
 
         return RAGState(
             question=question,

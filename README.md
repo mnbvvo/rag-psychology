@@ -29,9 +29,10 @@ python -m uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
 ## 项目结构
 
 ```text
-api/main.py              FastAPI 接口（/api/health、/api/query）
-config/                 settings.py 与危机关键词 crisis_keywords.json
-modules/                RAG 核心、向量库封装、安全检测
+api/main.py              FastAPI 接口（/api/health、/api/query、/api/system-prompt）
+config/                 settings.py、危机关键词 crisis_keywords.json、系统提示词 json
+modules/                RAG 核心、向量库封装、安全检测、提示词存储 prompt_store
+frontend/               纯静态前端页面（系统提示词管理，由 FastAPI 托管）
 scripts/import_cards.py 离线 JSONL 卡片导入
 data/samples/           示例数据
 chroma_db/              本地向量库（运行时生成，已被 .gitignore 忽略）
@@ -147,6 +148,34 @@ curl http://127.0.0.1:8000/api/health
 
 - 命中中/低危关键词时，`safety_note` 附带关怀与求助资源，`safety_check` 含等级与命中关键词明细。
 - 命中**高危**时，`is_crisis_response=true` 且 `answer` 直接为危机干预提示，不再走常规检索。
+
+## 前端页面与系统提示词管理
+
+启动服务后（`python -m uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload`），直接访问根路径即可打开前端页面：
+
+```powershell
+# 打开浏览器访问
+Start-Process http://127.0.0.1:8000/
+```
+
+前端为纯静态页面（`frontend/`，由 FastAPI 直接托管，无需额外构建），是一个 **PromptLab 风格的提示词工作台**（设计/交互参考 `xinli` 项目），包含三个页面：
+
+1. **提示词管理**：不区分儿童 / 少年 / 青少年 / 青年。`config/system_prompt.json` 现在是一个**提示词库**（`prompts[]`），支持新增、重命名、删除、编辑、设置激活提示词；所有提示词都在左侧列表展示，不会互相覆盖。中间是编辑器，右侧是实时渲染预览。点击「保存并同步」（`Ctrl/Cmd + S`）把当前提示词写入文件，「设为激活」指定 RAG 默认使用的提示词，「还原默认」一键复位。
+2. **对话联调**：多会话（新建 / 重命名 / 删除 / 导出），直接调用后端 `/api/query` 进行 RAG 问答。右侧 Inspector 可选择使用哪条提示词；默认使用「激活提示词」。
+3. **提示词对比**：输入同一问题，A/B 双栏可分别选择不同提示词（A 可选出厂默认库，B 可选当前编辑库）跑 RAG，对照答案与引用来源，并保存对比历史（可点击恢复）。
+
+> 系统提示词原本硬编码在 `modules/rag_core.py`，现已外置为可编辑文件，由 `modules/prompt_store.py` 统一加载/组装。`config/system_prompt.default.json` 为出厂默认库（已提交，作对比基线，请勿手改其语义）；`config/system_prompt.json` 为用户态库（已被 `.gitignore` 忽略）。旧版单字段 `system_prompt` 结构会在首次读取时自动迁移为 `prompts[]`。前端所有状态（提示词选择、会话、对比历史）持久化在浏览器 `localStorage`。
+
+相关接口：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/system-prompt` | 返回 `{ current, default }` 两套配置（均含 `prompts[]` 与 `activeId`） |
+| PUT | `/api/system-prompt` | 支持 `prompts` / `activeId` / `add` / `update` / `deleteId` 多种操作 |
+| POST | `/api/system-prompt/reset` | 还原为出厂默认库 |
+| POST | `/api/query` | RAG 问答；可选 `system_prompt_override`（不落盘覆盖）或 `prompt_id`（使用库中指定提示词） |
+
+> **Postman / 外部调用**：直接 `POST http://127.0.0.1:8000/api/query`，`Content-Type: application/json`，请求体 `{"question": "..."}` 即可。前端只在浏览器访问根路径 `/` 时出现，不影响接口调用，无需单独端口。
 
 ## 安全与危机干预
 

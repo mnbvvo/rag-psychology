@@ -23,6 +23,8 @@ class PsychologyRAGSystem:
         question: str,
         age_group: str = None,
         check_safety: bool = True,
+        system_prompt_override: Optional[str] = None,
+        prompt_id: Optional[str] = None,
     ) -> Dict:
         """查询系统"""
         result = {
@@ -45,7 +47,7 @@ class PsychologyRAGSystem:
                 return result
 
         # 执行RAG查询
-        rag_result = self.rag.run(question, age_group)
+        rag_result = self.rag.run(question, age_group, system_prompt_override, prompt_id)
         result["answer"] = rag_result["answer"]
         result["sources"] = rag_result["sources"]
         result["is_crisis_response"] = False
