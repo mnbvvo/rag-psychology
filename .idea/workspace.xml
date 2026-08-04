@@ -5,12 +5,9 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="bdc944e4-11e3-4f40-9da6-afc66b4e0183" name="更改" comment="">
-      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/api/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/api/main.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/modules/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/modules/__init__.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/modules/rag_core.py" beforeDir="false" afterPath="$PROJECT_DIR$/modules/rag_core.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/frontend/app.js" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/app.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/frontend/styles.css" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/styles.css" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -224,7 +221,7 @@
       <workItem from="1785810583437" duration="6946000" />
       <workItem from="1785818930791" duration="577000" />
       <workItem from="1785819661640" duration="3473000" />
-      <workItem from="1785824343909" duration="5065000" />
+      <workItem from="1785824343909" duration="7302000" />
     </task>
     <servers />
   </component>
@@ -238,7 +235,7 @@
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/rag_psychology$.coverage" NAME=" 覆盖结果" MODIFIED="1784788835591" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/rag_psychology$python__m_uvicorn_api_main_app___host_127_0_0_1___port_8001___reload.coverage" NAME="python -m uvicorn api.main:app --host 127.0.0.1 --port 8001 --reload 覆盖结果" MODIFIED="1785825959962" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
-    <SUITE FILE_PATH="coverage/rag_psychology$python__m_uvicorn_api_main_app___host_127_0_0_1___port_8000___reload.coverage" NAME="python -m uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload 覆盖结果" MODIFIED="1785830411288" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/rag_psychology$python__m_uvicorn_api_main_app___host_127_0_0_1___port_8000___reload.coverage" NAME="python -m uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload 覆盖结果" MODIFIED="1785832044770" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/rag_psychology$main.coverage" NAME="main 覆盖结果" MODIFIED="1785817905873" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/api" />
     <SUITE FILE_PATH="coverage/rag_psychology$python_scripts_import_cards_py__C__Users_Thunderobot_Desktop_knowledge_base_automation_out_output_cards_jsonl____reset.coverage" NAME="python scripts/import_cards.py &quot;C:\Users\Thunderobot\Desktop\knowledge_base_automation\out\output_cards.jsonl&quot; --reset 覆盖结果" MODIFIED="1785820659154" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/rag_psychology$1.coverage" NAME="1 覆盖结果" MODIFIED="1785232517359" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />

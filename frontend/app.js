@@ -106,8 +106,9 @@ async function loadPromptConfig() {
       state.selectedPromptId = state.activePromptId || state.prompts[0]?.id || "";
     }
     // 对比/对话选择兜底
-    if (!state.compareSelections.a) state.compareSelections.a = state.defaultPrompts[0]?.id || "";
-    if (!state.compareSelections.b) state.compareSelections.b = state.activePromptId || "";
+    const anyPromptId = state.prompts[0]?.id || state.defaultPrompts[0]?.id || "";
+    if (!state.compareSelections.a || !getPromptById(state.compareSelections.a).id) state.compareSelections.a = state.defaultPrompts[0]?.id || anyPromptId;
+    if (!state.compareSelections.b || !getPromptById(state.compareSelections.b).id) state.compareSelections.b = state.activePromptId || anyPromptId;
     if (!state.chatPromptId) state.chatPromptId = state.activePromptId || "";
   } catch (e) {
     showToast(`读取提示词库失败：${e.message}`, "error");
@@ -511,8 +512,8 @@ function renderCompare() {
           <button class="ghost-btn" id="clear-compare">清空结果</button>
         </div>
         <div class="compare-grid">
-          ${renderCompareCard("a", "出厂默认", state.compareSelections.a)}
-          ${renderCompareCard("b", "当前编辑", state.compareSelections.b)}
+          ${renderCompareCard("a", "提示词 A", state.compareSelections.a)}
+          ${renderCompareCard("b", "提示词 B", state.compareSelections.b)}
         </div>
       </section>
     </div>`;
@@ -538,11 +539,13 @@ function renderCompare() {
 }
 
 function renderCompareCard(side, title, selectedId) {
-  const isDefaultSide = side === "a";
-  const options = isDefaultSide
-    ? state.defaultPrompts.map((p) => `<option value="${p.id}" ${p.id === selectedId ? "selected" : ""}>${escapeHtml(p.name)}</option>`).join("")
-    : state.prompts.map((p) => `<option value="${p.id}" ${p.id === selectedId ? "selected" : ""}>${escapeHtml(p.name)}${p.id === state.activePromptId ? "（激活）" : ""}</option>`).join("");
-  const tagColor = isDefaultSide ? "a" : "b";
+  // A/B 两侧均可从「当前库 + 出厂默认库」中任选
+  const currentOptions = state.prompts.map((p) => `<option value="${p.id}" ${p.id === selectedId ? "selected" : ""}>${escapeHtml(p.name)}${p.id === state.activePromptId ? "（激活）" : ""}</option>`).join("");
+  const defaultOptions = state.defaultPrompts.length
+    ? `<optgroup label="出厂默认">${state.defaultPrompts.map((p) => `<option value="${p.id}" ${p.id === selectedId ? "selected" : ""}>${escapeHtml(p.name)}</option>`).join("")}</optgroup>`
+    : "";
+  const options = `${currentOptions}${defaultOptions}`;
+  const tagColor = side === "a" ? "a" : "b";
   return `
     <div class="compare-card">
       <header><span class="tag ${tagColor}">${side.toUpperCase()}</span><span class="title">${escapeHtml(title)}</span><select class="compare-prompt-select" data-side="${side}">${options}</select></header>
@@ -619,16 +622,13 @@ async function runCompare() {
   ["a", "b"].forEach(setCompareCardLoading);
 
   const jobs = [
-    ["a", promptA.content, state.compareSelections.a],
-    ["b", promptB.content, state.compareSelections.b],
-  ].map(async ([side, promptContent, promptId]) => {
+    ["a", promptA.content],
+    ["b", promptB.content],
+  ].map(async ([side, promptContent]) => {
     const started = performance.now();
     const result = { side };
     try {
       const body = { question: input, system_prompt_override: promptContent };
-      if (!state.defaultPrompts.find((p) => p.id === promptId)) {
-        body.prompt_id = promptId; // 不是默认库里的才用 prompt_id
-      }
       const data = await api("POST", "/api/query", body);
       result.answer = data.answer || "（无返回内容）";
       result.sources = data.sources || [];
