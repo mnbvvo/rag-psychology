@@ -19,13 +19,19 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 from typing import List, Optional, Dict
+import json
 from modules import rag_system
 from modules.prompt_store import (
     get_prompt_config,
     update_prompt_config,
     reset_prompt_config,
+    ensure_prompts_seeded,
 )
 from config.settings import settings
+from db import init_db, crud
+from db.models import Session as ConvSession, CompareHistory
+from sqlalchemy import select, desc, func
+import uuid
 
 app = FastAPI(
     title="青少年心理RAG系统API",
@@ -33,14 +39,14 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# 允许本地前端跨域访问（前端既可由本服务托管，也可直接以 file:// 打开）。
-# 服务本身仅监听 127.0.0.1，不存在暴露到局域网的风险。
+# 跨域：默认仅放行本服务同源 + localhost（前端由本服务托管时同源本不需要跨域；
+# 若前端独立部署 / 用开发服务器，请在 .env 用 CORS_ORIGINS 显式放行，切勿用 "*"）。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
@@ -88,6 +94,15 @@ class QueryRequest(BaseModel):
         None,
         description="可选：使用提示词库中指定 id 的提示词（与 override 互斥，override 优先）。",
     )
+    session_id: Optional[str] = Field(
+        None,
+        description="会话 id（前端本地生成，如 session-<timestamp>）；不传则由服务端生成并在响应中返回。用于把多轮对话与危机审计持久化到关系库。",
+    )
+    persist: Optional[bool] = Field(
+        True,
+        description="是否将本轮对话持久化到关系库（sessions/messages）。对话联调页应保留默认 true；"
+        "提示词对比页请传 false，避免对比用的临时问答被写入会话表、泄漏到历史对话列表。",
+    )
 
     @model_validator(mode="after")
     def check_question_or_messages(self):
@@ -115,13 +130,35 @@ class QueryResponse(BaseModel):
         None,
         description="各阶段耗时（毫秒）：safety/embed/retrieve/llm/total",
     )
+    session_id: Optional[str] = Field(
+        None,
+        description="本次对话归属的会话 id（与请求中的 session_id 对应；未传时由服务端生成）。",
+    )
+
+
+class SessionCreate(BaseModel):
+    """新建会话"""
+    name: Optional[str] = Field(None, description="会话名称，留空则默认“新的对话”")
+
+
+class SessionRename(BaseModel):
+    """重命名会话"""
+    name: str = Field(..., description="新名称")
+
+
+class CompareHistoryItem(BaseModel):
+    """新增一条对比历史记录"""
+    input: str = Field(..., description="对比用的测试问题")
+    a: Dict = Field(..., description="A 侧完整结果（answer/sources/timings 等）")
+    b: Dict = Field(..., description="B 侧完整结果")
 
 
 @app.post("/api/query", response_model=QueryResponse)
 async def query(request: QueryRequest):
     """
     查询接口
-    接收用户问题，返回RAG生成的回答
+    接收用户问题，返回RAG生成的回答，并把本轮对话与（若命中）危机事件
+    持久化到关系库（与 Chroma 向量检索互补）。
     """
     try:
         result = await run_in_threadpool(
@@ -134,7 +171,48 @@ async def query(request: QueryRequest):
             prompt_id=request.prompt_id,
         )
 
-        return QueryResponse(**result)
+        # —— 持久化到关系库（会话 + 危机审计） ——
+        # 与 Chroma 向量库分工：Chroma 管检索，这里管结构化留痕。
+        # 仅对话联调页（persist=true）需要落库；提示词对比页传 persist=false，
+        # 其临时问答不写入会话表，避免泄漏到历史对话列表。
+        # 持久化失败不影响已经生成的回答，只打告警日志。
+        current_question = result.get("question", "")
+        answer = result.get("answer", "")
+        session_id = None
+        if request.persist:
+            session_id = request.session_id or uuid.uuid4().hex
+            try:
+                with crud.get_db() as db:
+                    crud.append_turn(
+                        db,
+                        session_id,
+                        current_question,
+                        answer,
+                        title=current_question[:50] if current_question else None,
+                    )
+                    sc = result.get("safety_check")
+                    if sc and sc.get("is_crisis"):
+                        crud.log_crisis(
+                            db,
+                            session_id,
+                            level=sc.get("level", "unknown"),
+                            keywords_found=sc.get("keywords_found"),
+                            question=current_question,
+                            response=answer if result.get("is_crisis_response") else result.get("safety_note"),
+                            is_crisis_response=bool(result.get("is_crisis_response")),
+                        )
+            except Exception as e:
+                print(f"[persist][WARN] 会话持久化失败（回答已正常返回）: {e}", flush=True)
+
+        return QueryResponse(
+            answer=answer,
+            sources=result.get("sources") or [],
+            safety_note=result.get("safety_note"),
+            is_crisis_response=bool(result.get("is_crisis_response", False)),
+            safety_check=result.get("safety_check"),
+            timings=result.get("timings"),
+            session_id=session_id,
+        )
     except ValueError as e:
         # 参数校验类错误返回 400，便于前端定位
         raise HTTPException(status_code=400, detail=str(e))
@@ -151,6 +229,129 @@ async def health_check():
         "status": "healthy",
         "version": "1.0.0",
     }
+
+
+@app.get("/api/sessions")
+async def list_sessions(limit: int = 50):
+    """列出最近会话（含消息数），用于审计/排查。"""
+    with crud.get_db() as db:
+        rows = (
+            db.execute(select(ConvSession).order_by(desc(ConvSession.updated_at)).limit(limit))
+            .scalars()
+            .all()
+        )
+        return [
+            {
+                "id": s.id,
+                "title": s.title,
+                "created_at": s.created_at.isoformat() if s.created_at else None,
+                "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+                "message_count": len(s.messages),
+            }
+            for s in rows
+        ]
+
+
+@app.get("/api/sessions/{session_id}/messages")
+async def get_session_messages(session_id: str):
+    """获取某会话的全部消息（按时间顺序）。"""
+    with crud.get_db() as db:
+        sess = db.get(ConvSession, session_id)
+        if sess is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        return [
+            {
+                "role": m.role,
+                "content": m.content,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            }
+            for m in sess.messages
+        ]
+
+
+@app.post("/api/sessions")
+async def create_session(payload: SessionCreate):
+    """新建一个空会话，返回服务端生成的 id（前端以此为后续对话归属）。"""
+    with crud.get_db() as db:
+        sess = ConvSession(id=uuid.uuid4().hex, title=(payload.name or "新的对话")[:255])
+        db.add(sess)
+        db.flush()
+        return {
+            "id": sess.id,
+            "name": sess.title,
+            "created_at": sess.created_at.isoformat() if sess.created_at else None,
+            "updated_at": sess.updated_at.isoformat() if sess.updated_at else None,
+            "message_count": 0,
+        }
+
+
+@app.patch("/api/sessions/{session_id}")
+async def rename_session(session_id: str, payload: SessionRename):
+    """重命名会话。"""
+    with crud.get_db() as db:
+        sess = db.get(ConvSession, session_id)
+        if sess is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        sess.title = payload.name[:255]
+        return {"id": sess.id, "name": sess.title}
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """删除会话（级联删除其消息）。"""
+    with crud.get_db() as db:
+        sess = db.get(ConvSession, session_id)
+        if sess is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        db.delete(sess)
+    return {"ok": True, "id": session_id}
+
+
+@app.get("/api/compare-history")
+async def list_compare_history(limit: int = 50):
+    """列出对比历史记录（含 A/B 完整结果）。"""
+    with crud.get_db() as db:
+        rows = crud.list_compare_history(db, limit=limit)
+        return [
+            {
+                "id": r.id,
+                "input": r.input,
+                "a": json.loads(r.result_a) if r.result_a else None,
+                "b": json.loads(r.result_b) if r.result_b else None,
+                "createdAt": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+
+
+@app.post("/api/compare-history")
+async def add_compare_history(item: CompareHistoryItem):
+    """新增一条对比历史记录。"""
+    with crud.get_db() as db:
+        r = crud.add_compare_history(
+            db,
+            item.input,
+            json.dumps(item.a, ensure_ascii=False),
+            json.dumps(item.b, ensure_ascii=False),
+        )
+        return {
+            "id": r.id,
+            "input": r.input,
+            "a": item.a,
+            "b": item.b,
+            "createdAt": r.created_at.isoformat() if r.created_at else None,
+        }
+
+
+@app.delete("/api/compare-history/{item_id}")
+async def delete_compare_history(item_id: int):
+    """删除一条对比历史记录。"""
+    with crud.get_db() as db:
+        r = crud.get_compare_history(db, item_id)
+        if r is None:
+            raise HTTPException(status_code=404, detail="记录不存在")
+        db.delete(r)
+    return {"ok": True, "id": item_id}
 
 
 class PromptItem(BaseModel):
@@ -194,7 +395,7 @@ async def get_system_prompt():
 @app.put("/api/system-prompt")
 async def put_system_prompt(payload: PromptUpdate):
     """
-    更新系统提示词库并同步写入后端文件 config/system_prompt.json。
+    更新系统提示词库（持久化到 SQLite 的 prompts 表）。
     支持增删改、完整替换、设置激活提示词。
     """
     try:
@@ -222,7 +423,7 @@ async def put_system_prompt(payload: PromptUpdate):
 @app.post("/api/system-prompt/reset")
 async def reset_system_prompt():
     """
-    还原系统提示词为出厂默认（覆盖 config/system_prompt.json）。
+    还原系统提示词为出厂默认（清空 prompts 表并重新从出厂文件 seed）。
     """
     saved = reset_prompt_config()
     return {"ok": True, "config": saved}
@@ -230,12 +431,15 @@ async def reset_system_prompt():
 
 @app.on_event("startup")
 async def startup_event():
-    """启动时验证配置"""
+    """启动时验证配置、建表、seed 提示词库"""
     settings.validate()
+    init_db()
+    ensure_prompts_seeded()
     print("=" * 50)
     print("青少年心理RAG系统已启动")
     print(f"模型: {settings.CHAT_MODEL}")
     print(f"向量数据库: Chroma")
+    print(f"关系数据库: {settings.DB_URL}")
     print(f"安全检查: {'启用' if settings.SAFETY_CHECK_ENABLED else '禁用'}")
     print("=" * 50)
 

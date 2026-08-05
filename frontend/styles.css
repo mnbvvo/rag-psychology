@@ -1227,6 +1227,55 @@ button, input, textarea, select {
   font-weight: 600;
 }
 
+/* 历史记录行：承载「恢复卡片 + 删除按钮」，并支撑删除退出动画 */
+.history-row {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  margin-bottom: 8px;
+  max-height: 140px;        /* 用于删除时平滑收起高度 */
+  overflow: hidden;
+}
+
+/* 行内卡片占满剩余宽度，去掉自身下边距（由 row 统一负责间距） */
+.history-row .history-item {
+  flex: 1;
+  width: auto;
+  margin-bottom: 0;
+}
+
+/* 圆形删除按钮：常显，点击后由 .removing 播放退出动画 */
+.history-del {
+  flex-shrink: 0;
+  align-self: center;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+/* 删除退出动画：淡出 + 右滑 + 高度收起，下方条目平滑上移 */
+.history-row.removing {
+  pointer-events: none;
+  animation: historyRowOut 0.3s ease forwards;
+}
+
+@keyframes historyRowOut {
+  to {
+    opacity: 0;
+    transform: translateX(24px);
+    max-height: 0;
+    margin-bottom: 0;
+  }
+}
+
 /* ---------------- Toast ---------------- */
 .toast {
   position: fixed;
@@ -1255,6 +1304,53 @@ button, input, textarea, select {
 
 .toast.success {
   background: var(--success);
+}
+
+/* ---------------- 跨设备会话恢复 ---------------- */
+.server-sessions {
+  flex-shrink: 0;
+  max-height: 42%;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+
+.server-sessions .section-title {
+  padding: 14px 20px 10px;
+  font-size: 12px;
+}
+
+.server-sessions .section-title span {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.server-item {
+  border-left: 3px solid var(--teal);
+}
+
+.cloud-mark {
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+  color: var(--teal);
+}
+
+.server-restore {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 4px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.server-restore:hover {
+  background: var(--accent);
+  color: #fff;
 }
 
 /* ---------------- 响应式 ---------------- */

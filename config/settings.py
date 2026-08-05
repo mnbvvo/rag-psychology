@@ -35,16 +35,16 @@ class Settings:
 
     # 模型配置（更换模型/部署环境时在 .env 覆盖；不填则用下列默认值）
     CHAT_MODEL = os.getenv("CHAT_MODEL", "qwen3.5-35b-a3b")  # 对话生成模型
-    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v3")  # 向量化模型（与 chroma_db 绑定，换模型须 --reset 重导）
+    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v3")  # 向量化模型（与向量库绑定，换模型须 --reset 重导）
 
     # 思考/推理模式（仅部分 OpenAI 兼容模型支持，如 Qwen3 / DeepSeek；端点不支持时请把下面的值改为 False，否则可能报 400）
     ENABLE_THINKING = False  # 是否在请求体注入 enable_thinking 控制思考模式
 
     # RAG 配置（路径锚定到项目根目录，避免 cwd 不同导致找不到文件/库）
     CHROMA_PERSIST_DIR = _resolve_path(
-        os.getenv("CHROMA_PERSIST_DIR", "chroma_db"),
+        os.getenv("CHROMA_PERSIST_DIR", "data/chroma"),
         _PROJECT_ROOT,
-    )  # 本地向量库持久化目录
+    )  # 本地向量库持久化目录（统一收在 data/ 下）
     COLLECTION_NAME = os.getenv("COLLECTION_NAME", "psychology_knowledge")  # Chroma 集合名
     RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "3"))  # 最终喂给模型/展示的来源条数（similarity 与 mmr 两模式统一使用此值）
 
@@ -76,6 +76,19 @@ class Settings:
     HOST = os.getenv("HOST", "127.0.0.1")  # 监听地址；切勿改为 0.0.0.0 以免暴露到局域网
     PORT = int(os.getenv("PORT", "8000"))  # 监听端口
     DEBUG = os.getenv("DEBUG", "false").lower() == "true"  # 调试模式（开启时 uvicorn --reload 且单进程）
+
+    # 跨域白名单（前端若独立部署 / 用 Vite 等开发服务器时需在此放行；
+    # 默认由本服务同源托管前端，无需跨域；留空则仅允许本服务自身 origin，切勿用 "*"）
+    _env_cors = os.getenv("CORS_ORIGINS", "")
+    CORS_ORIGINS = [o.strip() for o in _env_cors.split(",") if o.strip()] or [
+        f"http://{HOST}:{PORT}",
+        f"http://localhost:{PORT}",
+    ]
+
+    # 关系型数据库（结构化持久化：会话 / 消息 / 危机审计；与向量库 Chroma 互补）
+    # 默认 SQLite（单文件、零部署）；生产/多 worker 可改为 mysql+pymysql://user:pwd@host/db
+    _DB_PATH = _resolve_path(os.getenv("DB_PATH", "data/rag_psychology.sqlite3"), _PROJECT_ROOT)
+    DB_URL = os.getenv("DB_URL", f"sqlite:///{_DB_PATH.replace('\\', '/')}")
 
     # 项目根目录
     PROJECT_ROOT = _PROJECT_ROOT

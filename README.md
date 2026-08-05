@@ -27,13 +27,15 @@ python -m uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
 ## 项目结构
 
 ```text
-api/main.py              FastAPI 接口（/api/health、/api/query、/api/system-prompt）
+api/main.py              FastAPI 接口（/api/health、/api/query、/api/system-prompt、/api/sessions、/api/compare-history）
 config/                 settings.py、危机关键词 crisis_keywords.json、系统提示词 json
-modules/                RAG 核心、向量库封装、安全检测、提示词存储 prompt_store
+db/                     SQLAlchemy 关系库：models（5 张表）、crud（读写）、__init__（引擎/建表）
+modules/                RAG 核心、向量库封装、安全检测、提示词存储 prompt_store（SQLite 后端）
 frontend/               纯静态前端页面（系统提示词管理，由 FastAPI 托管）
 scripts/import_cards.py 离线 JSONL 卡片导入
-data/samples/           示例数据
-chroma_db/              本地向量库（运行时生成，已被 .gitignore 忽略）
+data/                  运行时生成的数据目录（已被 .gitignore 忽略）：
+                         - data/chroma/             本地向量库（Chroma）
+                         - data/rag_psychology.sqlite3  关系库（SQLite）
 test_rag.py             端到端自测脚本
 requirements.txt        Python 依赖
 ```
@@ -148,7 +150,7 @@ Start-Process http://127.0.0.1:8000/
 2. **对话联调**：多会话（新建 / 重命名 / 删除 / 导出），直接调用后端 `/api/query` 进行 RAG 问答。右侧 Inspector 可选择使用哪条提示词；默认使用「激活提示词」。
 3. **提示词对比**：输入同一问题，A/B 双栏可分别选择不同提示词（A 可选出厂默认库，B 可选当前编辑库）跑 RAG，对照答案与引用来源，并保存对比历史（可点击恢复）。
 
-> 系统提示词原本硬编码在 `modules/rag_core.py`，现已外置为可编辑文件，由 `modules/prompt_store.py` 统一加载/组装。`config/system_prompt.default.json` 为出厂默认库（已提交，作对比基线，请勿手改其语义）；`config/system_prompt.json` 为用户态库（已被 `.gitignore` 忽略）。旧版单字段 `system_prompt` 结构会在首次读取时自动迁移为 `prompts[]`。前端所有状态（提示词选择、会话、对比历史）持久化在浏览器 `localStorage`。
+> 系统提示词原本硬编码在 `modules/rag_core.py`，现已外置为可编辑文件，由 `modules/prompt_store.py` 统一加载/组装。`config/system_prompt.default.json` 为出厂默认库（已提交，作对比基线，请勿手改其语义）；`config/system_prompt.json` 为用户态库（已被 `.gitignore` 忽略）。旧版单字段 `system_prompt` 结构会在首次读取时自动迁移为 `prompts[]`。**前端所有状态（提示词选择、会话、对比历史）现已统一持久化到 SQLite（`data/rag_psychology.sqlite3`），不再使用浏览器 `localStorage`；SQLite 是前端唯一数据源，刷新页面或换设备均可恢复。** 详见下文「关系型数据库（SQLite）」一节。
 
 相关接口：
 
@@ -201,10 +203,124 @@ JSONL 每行一条记录：
 
 ## 本地向量库
 
-- 向量由 `EMBEDDING_MODEL` 生成，文档来自 JSONL 结构化卡片（一卡一文档），持久化在 `chroma_db/`，重启后仍可用。
+- 向量由 `EMBEDDING_MODEL` 生成，文档来自 JSONL 结构化卡片（一卡一文档），持久化在 `data/chroma/`（统一收在 data/ 下），重启后仍可用。
 - 重建：先 `--reset` 再重新导入。
 
 > ⚠️ 向量与 `EMBEDDING_MODEL` 绑定：更换 embedding 模型后旧向量会**静默失效**（不报错但检索质量崩坏），必须 `--reset` 重新导入。
+
+## 关系型数据库（SQLite）
+
+本项目有**两层持久化**，分工明确：
+
+- **Chroma（向量库）**：只负责语义检索——把知识卡片向量化、按相似度召回相关片段。
+- **SQLite（关系库）**：只负责结构化留痕——会话 / 消息 / 危机审计 / 提示词库 / 对比历史。文件为 `data/rag_psychology.sqlite3`（单文件、零部署）。
+
+两者互不替代：RAG 检索走 Chroma，对话记录与配置走 SQLite。未来若要上多 worker / 生产环境，把 `settings.DB_URL` 改成 `mysql+pymysql://user:pwd@host/db` 即可，**业务代码无需改动**（SQLAlchemy 已做抽象）。
+
+### 配置
+
+| 配置项 | 位置 | 默认值 | 说明 |
+|---|---|---|---|
+| `DB_PATH` | `config/settings.py` / `.env` | `data/rag_psychology.sqlite3` | 库文件相对项目根的路径 |
+| `DB_URL` | `config/settings.py` / `.env` | `sqlite:///<DB_PATH>` | SQLAlchemy 连接串 |
+
+> 文件后缀曾为 `.db`，后统一改为 `.sqlite3`（两者格式完全相同，仅命名习惯）。`.gitignore` 已忽略整个 `data/` 目录（同时覆盖 `data/chroma/` 向量库与 `*.db`/`*.sqlite3` 关系库），两库均不会被提交；备份请用 `data/` 整体拷贝。
+
+### 代码结构（`db/` 包）
+
+```text
+db/
+├── __init__.py   引擎创建 + init_db() 幂等建表；get_db() 在 crud 中
+├── models.py     5 张表的 ORM 定义（见下表）
+└── crud.py       get_db() 上下文管理器 + 各表读写函数
+modules/
+└── prompt_store.py  提示词库读写（SQLite 后端，替代原 system_prompt.json 数据源）
+```
+
+- `db/__init__.py`：对 SQLite 关闭 `check_same_thread`（FastAPI 用线程池跑同步 DB 调用）；`init_db()` 用 `create_all` 建表，幂等——启动时会自动补建缺失的表，旧库升级时**无需手动迁移**。
+- `db/crud.py`：`get_db()` 是上下文管理器，退出自动 commit、异常回滚、始终关闭连接。
+
+### 数据表（5 张）
+
+| 表 | 字段 | 说明 |
+|---|---|---|
+| `sessions` | `id`(PK, String36, 缺省 `uuid4().hex`)、`title`(String255, 默认"新会话")、`created_at`、`updated_at` | 一次完整对话；`messages` 级联删除 |
+| `messages` | `id`(PK, int 自增)、`session_id`(FK→sessions.id, `ON DELETE CASCADE`, 索引)、`role`(String20: `human`/`ai`)、`content`(Text)、`created_at` | 单条消息 |
+| `crisis_audit` | `id`、`session_id`(可空, 索引)、`crisis_level`(high/medium/low)、`keywords_found`(Text, JSON)、`question`、`response`(可空)、`is_crisis_response`(bool)、`created_at`(索引) | 危机命中审计留痕（合规可追溯） |
+| `prompts` | `id`(PK, String36)、`name`(String255)、`content`(Text)、`is_active`(bool)、`created_at`、`updated_at` | 提示词库 |
+| `compare_history` | `id`(PK, int 自增)、`input`(Text)、`result_a`(Text, JSON, 可空)、`result_b`(Text, JSON, 可空)、`created_at`(索引) | 提示词对比历史 |
+
+> 约定：`Message.role` 在库中存 `human` / `ai`；前端显示用 `user` / `assistant`，映射在恢复 / 导入边界处理。`QueryRequest` 接受 `human`/`ai`/`user`/`assistant` 四种 role。`crisis_audit.keywords_found` 与 `compare_history.result_a/result_b` 在库中均为 **JSON 编码的字符串**。
+
+### 启动行为
+
+`api/main.py` 的 `startup_event` 依次执行：
+
+1. `settings.validate()`：校验 `OPENAI_API_KEY` 已配置。
+2. `init_db()`：确保目录存在 + `create_all` 建表（缺失即补，幂等）。
+3. `ensure_prompts_seeded()`（`modules/prompt_store.py`）：
+   - 若 `prompts` 表为空，则**优先从 `config/system_prompt.json` 迁移**，否则用出厂默认 `config/system_prompt.default.json` seed 出 4 条；
+   - 多进程锁（`threading.Lock`）保护，重复启动不会重复 seed。
+
+### 接口一览（关系库相关）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `POST` | `/api/query` | RAG 问答；`persist=true`（默认）时把本轮写入 `sessions`/`messages` 与（若命中）`crisis_audit` |
+| `GET` | `/api/sessions` | 列出最近会话（含 `message_count`） |
+| `GET` | `/api/sessions/{id}/messages` | 取某会话全部消息（按时间序） |
+| `POST` | `/api/sessions` | 新建空会话，返回服务端生成的 `id` |
+| `PATCH` | `/api/sessions/{id}` | 重命名会话 |
+| `DELETE` | `/api/sessions/{id}` | 删除会话（级联删消息） |
+| `GET` | `/api/compare-history` | 列出对比历史（含 A/B 完整结果） |
+| `POST` | `/api/compare-history` | 新增一条对比历史（`a` / `b` 为完整结果对象） |
+| `DELETE` | `/api/compare-history/{id}` | 删除一条对比历史 |
+| `GET` | `/api/system-prompt` | 返回 `{ current, default }` 两套提示词配置 |
+| `PUT` | `/api/system-prompt` | 更新提示词库（`prompts` / `activeId` / `add` / `update` / `deleteId`） |
+| `POST` | `/api/system-prompt/reset` | 还原为出厂默认库（清空 `prompts` 表重新 seed） |
+
+### `persist` 开关（一个曾踩坑的修复点）
+
+`/api/query` 的 `persist` 参数（默认 `true`）：
+
+- **对话联调页**保留默认 `true`，正常把问答写入 `sessions`/`messages`。
+- **提示词对比页**调用时传 `persist=false`，使临时对比问答**只进 `compare_history`，不污染会话表**。
+
+> 早期 bug：对比页没传 `persist`，而 `/api/query` 对未带 `session_id` 的请求会生成随机 id 并**无条件落库**，导致每次对比都泄漏一个孤儿会话、窜进对话联调的历史列表。修复为显式 `persist` 开关后解决；不持久化时响应 `session_id` 返回 `None`（前端对话页从不读响应里的 `session_id`，安全）。
+
+### 角色字段约定（再次强调）
+
+- 库内 `Message.role` 只存 `human` / `ai`；
+- 前端对话展示用 `user` / `assistant`，映射在加载 / 导入时处理；
+- `QueryRequest.messages[].role` 兼容四种取值（`human`/`ai`/`user`/`assistant`），最后一条须为用户问题。
+
+### 首次使用
+
+首次启动服务时，无需手动建表或导入数据：
+
+- `init_db()` 在启动事件中自动创建 `data/rag_psychology.sqlite3` 及全部 5 张表（`create_all` 幂等，旧库升级只补缺失的表，不破坏已有数据）；
+- `ensure_prompts_seeded()` 在 `prompts` 表为空时自动 seed 出 4 条提示词（优先用 `config/system_prompt.json`，否则用出厂默认 `config/system_prompt.default.json`）。
+
+启动后即可在前端直接开始对话、管理提示词、保存对比历史，无需额外初始化步骤。详细流程见上文「启动行为」。
+
+### 常用运维
+
+```powershell
+# 查看库内容
+sqlite3 data/rag_psychology.sqlite3 ".tables"
+sqlite3 data/rag_psychology.sqlite3 "SELECT id, title FROM sessions;"
+
+# 备份（直接拷文件，格式与扩展名无关）
+Copy-Item data/rag_psychology.sqlite3 data/rag_psychology.backup.sqlite3
+
+# 重置提示词为出厂默认（清空 prompts 表并重新 seed）
+# POST /api/system-prompt/reset
+
+# 清空全部结构化数据：删除库文件，重启服务会自动重建空库（含提示词 seed）
+Remove-Item data/rag_psychology.sqlite3
+```
+
+> 切换 embedding 模型**不影响** SQLite；它只与 Chroma 向量绑定。SQLite 的提示词 / 会话数据可独立于知识库长期留存。
 
 ## 测试
 
@@ -220,7 +336,7 @@ python test_rag.py
 
 1. **缺模块**：`pip install -r requirements.txt`。主链路无需 `unstructured`。
 2. **导入后无结果**：依次检查——知识库是否导入成功；`OPENAI_API_KEY` / `OPENAI_API_BASE` 是否有效；问题与卡片是否匹配；用了 `age_group` 过滤却无结果需 `--reset` 重导；开了 `MIN_RELEVANCE_SCORE` 后结果变少则调低或设 `0`。
-3. **数据重复**：`import_cards.py` 对文件内重复 `card_id` 报错；重复运行会重复写入，建议 `--reset` 重建或先清空 `chroma_db/`。
+3. **数据重复**：`import_cards.py` 对文件内重复 `card_id` 报错；重复运行会重复写入，建议 `--reset` 重建或先清空 `data/chroma/`。
 
 ## 备注
 

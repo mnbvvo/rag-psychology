@@ -3,52 +3,35 @@
 // 三页：提示词管理 / 对话联调 / 提示词对比
 // 后端接本项目 FastAPI：/api/system-prompt（提示词库）+ /api/query（RAG 问答）
 // ============================================================
-const STORAGE_KEY = "rpsy-prompt-lab-v2";
-
 const defaultState = {
   activePage: "prompt",            // prompt | chat | compare
   prompts: [],                     // 提示词库 { id, name, content }
   activePromptId: "",              // 当前激活提示词 id（RAG 默认使用）
   selectedPromptId: "",            // 提示词管理页当前选中编辑的 id
   defaultPrompts: [],              // 出厂默认提示词库（只读参考）
-  sessions: [{ id: "welcome", name: "新的对话", createdAt: Date.now(), messages: [] }],
-  activeSessionId: "welcome",
+  sessions: [],                    // 全部来自服务端 SQLite（含 messages）
+  activeSessionId: null,           // 当前打开的会话 id
   chatPromptId: "",                // 当前对话使用的提示词 id（空=激活提示词）
   compareInput: "孩子最近总说睡不着，作为家长该怎么和他温和地沟通？",
   compareSelections: { a: "", b: "" }, // 对比页 A/B 分别使用的提示词 id
-  compareHistory: [],
+  compareHistory: [],              // 全部来自服务端 SQLite
   currentCompare: null,
 };
 
-let state = loadState();
+// 所有业务数据（提示词 / 会话 / 消息 / 对比历史）均持久化在服务端 SQLite，
+// 前端不再使用浏览器缓存（localStorage）。state 仅作为当前页面运行时的内存镜像。
+let state = structuredClone(defaultState);
 let toastTimer;
 let comparing = false;
 
-// ---------------- 持久化 ----------------
-function loadState() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
-    const merged = { ...defaultState, ...saved };
-    merged.sessions = Array.isArray(saved.sessions) && saved.sessions.length
-      ? saved.sessions
-      : structuredClone(defaultState.sessions);
-    if (!merged.sessions.find((s) => s.id === merged.activeSessionId)) {
-      merged.activeSessionId = merged.sessions[0].id;
-    }
-    return merged;
-  } catch {
-    return structuredClone(defaultState);
-  }
-}
-
+// ---------------- 持久化指示（数据已统一存于服务端，此处仅更新 UI 提示） ----------------
 function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   updateSaveState();
 }
 
 function updateSaveState() {
   const el = document.querySelector("#save-state");
-  if (el) el.textContent = `已保存 ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
+  if (el) el.textContent = "已同步至服务器";
 }
 
 // ---------------- 工具 ----------------
@@ -176,7 +159,7 @@ function renderShell() {
         </nav>
         <div class="top-actions">
           <span id="conn" class="conn"><span class="dot"></span><span class="label">连接中…</span></span>
-          <span id="save-state" class="save-state">已保存</span>
+          <span id="save-state" class="save-state">已同步至服务器</span>
         </div>
       </header>
       <main class="workspace">
@@ -388,6 +371,20 @@ async function saveSelectedPrompt() {
 // ============================================================
 function renderChat() {
   const page = document.querySelector("#page-chat");
+
+  // 没有任何会话：引导新建（数据在服务端，不能凭空造本地会话）
+  if (!state.sessions.length) {
+    page.innerHTML = `
+      <div class="welcome">
+        <div class="bot-avatar">✦</div>
+        <h2>还没有对话</h2>
+        <p>点击下面按钮开始一段新的对话，所有内容都会保存在服务端数据库。</p>
+        <button class="primary-btn" id="empty-new">＋ 新建对话</button>
+      </div>`;
+    page.querySelector("#empty-new").addEventListener("click", createSession);
+    return;
+  }
+
   const session = currentSession();
   const messages = session.messages || [];
   const chatPrompt = getPromptById(state.chatPromptId);
@@ -431,10 +428,10 @@ function renderChat() {
   const restoredInput = page.querySelector("#chat-input");
   if (restoredInput && draft) restoredInput.value = draft;
 
-  page.querySelectorAll("[data-session]").forEach((b) => b.addEventListener("click", (e) => { if (e.target.dataset.deleteSession) return; state.activeSessionId = b.dataset.session; saveState(); renderChat(); }));
-  page.querySelectorAll("[data-delete-session]").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); if (state.sessions.length === 1) return showToast("至少保留一个对话", "error"); state.sessions = state.sessions.filter((s) => s.id !== b.dataset.deleteSession); state.activeSessionId = state.sessions[0].id; saveState(); renderChat(); }));
-  page.querySelector("#new-session").addEventListener("click", () => { const id = `session-${Date.now()}`; state.sessions.unshift({ id, name: "新的对话", createdAt: Date.now(), messages: [] }); state.activeSessionId = id; saveState(); renderChat(); });
-  page.querySelector("#rename-session").addEventListener("click", () => { const name = prompt("输入新的对话名称", session.name); if (name?.trim()) { session.name = name.trim(); saveState(); renderChat(); } });
+  page.querySelectorAll("[data-session]").forEach((b) => b.addEventListener("click", (e) => { if (e.target.dataset.deleteSession) return; selectSession(b.dataset.session); }));
+  page.querySelectorAll("[data-delete-session]").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); deleteSession(b.dataset.deleteSession); }));
+  page.querySelector("#new-session").addEventListener("click", () => createSession());
+  page.querySelector("#rename-session").addEventListener("click", () => { const name = prompt("输入新的对话名称", session.name); if (name?.trim()) renameSession(session.id, name.trim()); });
   page.querySelector("#export-session").addEventListener("click", exportSession);
   const form = page.querySelector("#chat-form");
   form.addEventListener("submit", async (e) => { e.preventDefault(); const input = page.querySelector("#chat-input"); const content = input.value.trim(); if (!content) return; input.value = ""; input.style.height = "auto"; await sendChat(content); });
@@ -499,7 +496,7 @@ async function sendChat(content) {
   try {
     // 多轮记忆：把当前会话的全部历史作为 messages 一起发给后端（不止当前一问）
     const history = session.messages.map((m) => ({ role: m.role, content: m.content }));
-    const body = { messages: history };
+    const body = { messages: history, session_id: session.id };
     if (state.chatPromptId) body.prompt_id = state.chatPromptId;
     const started = performance.now();
     const data = await api("POST", "/api/query", body);
@@ -522,6 +519,94 @@ function exportSession() {
   a.href = url; a.download = `对话-${session.name}-${new Date().toISOString().slice(0, 10)}.txt`;
   a.click(); URL.revokeObjectURL(url);
   showToast("对话已导出", "success");
+}
+
+// ---------------- 会话：服务端 SQLite 为唯一数据源 ----------------
+async function loadSessions() {
+  const list = await api("GET", "/api/sessions");
+  state.sessions = (Array.isArray(list) ? list : []).map((s) => ({
+    id: s.id,
+    name: s.title || "新会话",
+    createdAt: s.updated_at || s.created_at ? new Date(s.updated_at || s.created_at).getTime() : Date.now(),
+    messages: [],
+    loaded: false,
+  }));
+  if (!state.sessions.find((s) => s.id === state.activeSessionId)) {
+    state.activeSessionId = state.sessions.length ? state.sessions[0].id : null;
+  }
+}
+
+async function loadSessionMessages(id) {
+  try {
+    const msgs = await api("GET", `/api/sessions/${encodeURIComponent(id)}/messages`);
+    // 后端按语义存 human/ai；前端显示用 user/assistant，这里做一次对账映射
+    const roleMap = { human: "user", ai: "assistant" };
+    const mapped = (Array.isArray(msgs) ? msgs : []).map((m) => ({ role: roleMap[m.role] || m.role, content: m.content }));
+    const sess = state.sessions.find((s) => s.id === id);
+    if (sess) { sess.messages = mapped; sess.loaded = true; }
+  } catch { /* 忽略：保持空消息，不阻断界面 */ }
+}
+
+// 保证始终有一个可用会话（首屏 / 删除到空时自动在服务端新建）
+async function ensureActiveSession() {
+  if (!state.sessions.length) {
+    const data = await api("POST", "/api/sessions", { name: "新的对话" });
+    state.sessions.push({ id: data.id, name: data.name || "新的对话", createdAt: Date.now(), messages: [], loaded: true });
+  }
+  if (!state.sessions.find((s) => s.id === state.activeSessionId)) {
+    state.activeSessionId = state.sessions[0].id;
+  }
+  const active = state.sessions.find((s) => s.id === state.activeSessionId);
+  if (active && !active.loaded) await loadSessionMessages(active.id);
+}
+
+async function selectSession(id) {
+  state.activeSessionId = id;
+  const sess = state.sessions.find((s) => s.id === id);
+  if (sess && !sess.loaded) await loadSessionMessages(id);
+  renderChat();
+}
+
+async function createSession() {
+  try {
+    const data = await api("POST", "/api/sessions", { name: "新的对话" });
+    const sess = { id: data.id, name: data.name || "新的对话", createdAt: Date.now(), messages: [], loaded: true };
+    state.sessions.unshift(sess);
+    state.activeSessionId = sess.id;
+    renderChat();
+    showToast("已新建对话", "success");
+  } catch (e) {
+    showToast(`新建失败：${e.message}`, "error");
+  }
+}
+
+async function renameSession(id, name) {
+  try {
+    await api("PATCH", `/api/sessions/${encodeURIComponent(id)}`, { name });
+    const sess = state.sessions.find((s) => s.id === id);
+    if (sess) sess.name = name;
+    renderChat();
+  } catch (e) {
+    showToast(`重命名失败：${e.message}`, "error");
+  }
+}
+
+async function deleteSession(id) {
+  try {
+    await api("DELETE", `/api/sessions/${encodeURIComponent(id)}`);
+    state.sessions = state.sessions.filter((s) => s.id !== id);
+    if (state.activeSessionId === id) {
+      state.activeSessionId = state.sessions.length ? state.sessions[0].id : null;
+    }
+    // 始终至少保留一个会话（与旧行为一致）
+    if (!state.sessions.length) {
+      await createSession();
+      return;
+    }
+    renderChat();
+  } catch (e) {
+    showToast(`删除失败：${e.message}`, "error");
+  }
 }
 
 // ============================================================
@@ -598,16 +683,60 @@ function renderCompareCard(side, title, selectedId) {
 }
 
 function renderCompareHistory() {
+  if (!state.compareHistory.length) return '<div class="empty-small">还没有对比记录。</div>';
   return state.compareHistory.map((r) => `
-    <button class="history-item" data-history-id="${r.id}">
-      <span class="history-time">${new Date(r.createdAt).toLocaleString("zh-CN")}</span>
-      <span class="history-input">${escapeHtml(r.input)}</span>
-      <span class="history-models">A/B 对比</span>
-    </button>`).join("");
+    <div class="history-row">
+      <button class="history-item" data-history-id="${r.id}">
+        <span class="history-time">${new Date(r.createdAt).toLocaleString("zh-CN")}</span>
+        <span class="history-input">${escapeHtml(r.input)}</span>
+        <span class="history-models">A/B 对比</span>
+      </button>
+      <span class="history-del" data-del-history="${r.id}" title="删除记录">×</span>
+    </div>`).join("");
 }
 
 function bindCompareHistory() {
   document.querySelectorAll("[data-history-id]").forEach((b) => b.addEventListener("click", () => loadCompareRecord(b.dataset.historyId)));
+  document.querySelectorAll("[data-del-history]").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); deleteCompareRecord(b.dataset.delHistory); }));
+}
+
+async function deleteCompareRecord(id) {
+  const delBtn = document.querySelector(`[data-del-history="${id}"]`);
+  const row = delBtn ? delBtn.closest(".history-row") : null;
+  // 立即播放退出动画，给出视觉反馈（即便接口稍慢也不阻塞）
+  if (row) row.classList.add("removing");
+  try {
+    await api("DELETE", `/api/compare-history/${encodeURIComponent(id)}`);
+    state.compareHistory = state.compareHistory.filter((r) => String(r.id) !== String(id));
+    // 动画结束后只移除这一行 DOM，而非整列表重建（避免其余条目闪动）
+    const finish = () => {
+      if (!row || !row.parentNode) return;
+      row.remove();
+      if (!state.compareHistory.length) {
+        const hist = document.querySelector("#compare-history");
+        if (hist) hist.innerHTML = '<div class="empty-small">还没有对比记录。</div>';
+      }
+    };
+    if (row) {
+      row.addEventListener("animationend", finish, { once: true });
+      setTimeout(finish, 360); // 兜底：动画事件未触发时强制移除
+    } else {
+      finish();
+    }
+    showToast("已删除对比记录", "success");
+  } catch (e) {
+    if (row) row.classList.remove("removing"); // 失败则复原该行
+    showToast(`删除失败：${e.message}`, "error");
+  }
+}
+
+async function loadCompareHistory() {
+  try {
+    const list = await api("GET", "/api/compare-history");
+    state.compareHistory = Array.isArray(list) ? list : [];
+  } catch {
+    state.compareHistory = [];
+  }
 }
 
 function loadCompareRecord(id) {
@@ -676,7 +805,7 @@ async function runCompare() {
     const started = performance.now();
     const result = { side };
     try {
-      const body = { question: input, system_prompt_override: promptContent };
+      const body = { question: input, system_prompt_override: promptContent, persist: false };
       const data = await api("POST", "/api/query", body);
       result.answer = data.answer || "（无返回内容）";
       result.sources = data.sources || [];
@@ -697,9 +826,13 @@ async function runCompare() {
   const results = await Promise.all(jobs);
   const map = {};
   results.forEach((r) => { map[r.side] = r; });
-  state.compareHistory.unshift({ id: Date.now(), input, a: map.a, b: map.b, createdAt: new Date().toISOString() });
-  state.compareHistory = state.compareHistory.slice(0, 30);
-  saveState();
+  // 持久化到服务端 SQLite（对比历史）
+  try {
+    const record = await api("POST", "/api/compare-history", { input, a: map.a, b: map.b });
+    state.compareHistory.unshift(record);
+  } catch (e) {
+    showToast(`对比历史保存失败：${e.message}`, "error");
+  }
   const hist = document.querySelector("#compare-history");
   if (hist) hist.innerHTML = renderCompareHistory();
   bindCompareHistory();
@@ -719,7 +852,10 @@ document.addEventListener("keydown", (e) => {
 
 // ---------------- 启动 ----------------
 (async function init() {
-  await loadPromptConfig();
+  await loadPromptConfig();      // 加载提示词库（服务端 SQLite）
+  await loadSessions();          // 加载会话列表（服务端 SQLite）
+  await ensureActiveSession();   // 保证有一个可用会话并载入其消息
+  await loadCompareHistory();    // 加载对比历史（服务端 SQLite）
   render();
   checkConnection();
 })();
