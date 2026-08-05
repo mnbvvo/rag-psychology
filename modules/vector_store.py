@@ -85,16 +85,6 @@ class PsychologyVectorStore:
         print(f"成功写入 {len(stored_ids)} 个文档到向量存储")
         return stored_ids
 
-    def similarity_search(
-        self,
-        query: str,
-        k: int = None,
-        filter_dict: Optional[Dict] = None,
-    ) -> List[Document]:
-        """语义相似度搜索"""
-        k = k or settings.RERANK_TOP_K
-        return self.vectorstore.similarity_search(query, k=k, filter=filter_dict)
-
     def similarity_search_with_relevance_scores(
         self,
         query: str,

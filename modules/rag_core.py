@@ -3,7 +3,7 @@ RAG核心流程
 实现青少年心理领域的检索增强生成
 """
 import time
-from typing import List, Dict, Optional, TypedDict
+from typing import List, Dict, Optional
 from langchain_openai import ChatOpenAI
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
@@ -11,15 +11,6 @@ from langchain_core.output_parsers import StrOutputParser
 from modules.vector_store import PsychologyVectorStore
 from modules.prompt_store import build_system_prompt
 from config.settings import settings
-
-
-class RAGState(TypedDict):
-    """RAG状态"""
-    question: str
-    age_group: str  # 年龄段: child(6-9), early_teen(10-12), teen(13-15), late_teen(16-18)
-    context: List[Document]
-    answer: str
-    sources: List[Dict]
 
 
 class PsychologyRAG:
@@ -37,12 +28,8 @@ class PsychologyRAG:
             max_tokens=4096,
             timeout=30,       # 上游挂起时及时失败，避免请求永久阻塞
             max_retries=2,    # 瞬时网络/限流错误自动重试
-            # 思考/推理模式开关：注入到请求体，仅对支持 enable_thinking 的模型/端点生效
-            extra_body={"enable_thinking": settings.ENABLE_THINKING},
+            extra_body={"enable_thinking": settings.ENABLE_THINKING},  # 思考/推理模式开关
         )
-
-        # 检索相关性分数（供低相关判定使用）
-        self._last_scores: list[float] | None = None
 
     def _build_age_filter(self, age_group: str | None) -> dict | None:
         """仅当 age_group 命中已知分桶时才构建元数据过滤条件。"""
@@ -71,7 +58,6 @@ class PsychologyRAG:
                 lambda_mult=settings.MMR_LAMBDA,
                 filter_dict=filter_dict,
             )
-            self._last_scores = None
         else:
             # 带分数的语义检索，便于阈值过滤与重排序
             scored = self.vectorstore.similarity_search_with_relevance_scores(
@@ -87,7 +73,6 @@ class PsychologyRAG:
             scored.sort(key=lambda item: item[1], reverse=True)
             top = scored[: settings.RERANK_TOP_K]
             docs = [doc for doc, _ in top]
-            self._last_scores = [score for _, score in top]
 
         # 拆分 embed 与 retrieve：检索总耗时 - embedding 耗时
         search_total_ms = (time.perf_counter() - t0) * 1000
@@ -208,29 +193,6 @@ class PsychologyRAG:
             "sources": sources,
         }
 
-    async def arun(
-        self,
-        question: str,
-        age_group: str = "teen",
-        system_prompt_override: Optional[str] = None,
-        prompt_id: Optional[str] = None,
-        timings: Optional[Dict] = None,
-        messages: Optional[List[Dict]] = None,
-    ) -> RAGState:
-        """异步执行完整的RAG流程"""
-        # 检索
-        context = self.retrieve(question, age_group, timings=timings)
-
-        # 生成
-        result = self.generate(question, context, age_group, system_prompt_override, prompt_id, timings=timings, messages=messages)
-
-        return RAGState(
-            question=question,
-            age_group=age_group,
-            context=context,
-            answer=result["answer"],
-            sources=result["sources"],
-        )
 
     def run(
         self,
@@ -240,7 +202,7 @@ class PsychologyRAG:
         prompt_id: Optional[str] = None,
         timings: Optional[Dict] = None,
         messages: Optional[List[Dict]] = None,
-    ) -> RAGState:
+    ) -> Dict:
         """同步执行完整的RAG流程"""
         # 检索
         context = self.retrieve(question, age_group, timings=timings)
@@ -248,10 +210,10 @@ class PsychologyRAG:
         # 生成
         result = self.generate(question, context, age_group, system_prompt_override, prompt_id, timings=timings, messages=messages)
 
-        return RAGState(
-            question=question,
-            age_group=age_group,
-            context=context,
-            answer=result["answer"],
-            sources=result["sources"],
-        )
+        return {
+            "question": question,
+            "age_group": age_group,
+            "context": context,
+            "answer": result["answer"],
+            "sources": result["sources"],
+        }
