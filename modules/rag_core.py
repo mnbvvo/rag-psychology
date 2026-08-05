@@ -37,6 +37,8 @@ class PsychologyRAG:
             max_tokens=4096,
             timeout=30,       # 上游挂起时及时失败，避免请求永久阻塞
             max_retries=2,    # 瞬时网络/限流错误自动重试
+            # 思考/推理模式开关：注入到请求体，仅对支持 enable_thinking 的模型/端点生效
+            extra_body={"enable_thinking": settings.ENABLE_THINKING},
         )
 
         # 检索相关性分数（供低相关判定使用）
@@ -64,7 +66,7 @@ class PsychologyRAG:
             # 最大边际相关：在相关性基础上提升多样性
             docs = self.vectorstore.max_marginal_relevance_search(
                 question,
-                k=min(settings.RETRIEVAL_TOP_K, settings.FETCH_K),
+                k=settings.RERANK_TOP_K,
                 fetch_k=settings.FETCH_K * 2,
                 lambda_mult=settings.MMR_LAMBDA,
                 filter_dict=filter_dict,

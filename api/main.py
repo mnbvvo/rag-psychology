@@ -93,6 +93,10 @@ class QueryResponse(BaseModel):
     safety_note: Optional[str] = None
     is_crisis_response: bool = False
     safety_check: Optional[dict] = None
+    timings: Optional[dict] = Field(
+        None,
+        description="各阶段耗时（毫秒）：safety/embed/retrieve/llm/total",
+    )
 
 
 @app.post("/api/query", response_model=QueryResponse)

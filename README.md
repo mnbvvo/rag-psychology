@@ -52,7 +52,7 @@ OPENAI_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1  # OpenAI 兼�
 CHAT_MODEL=qwen3.6-flash                                                                # 对话模型（实际部署按需覆盖，例如 deepseek-v4-flash）
 ```
 
-> 想调 `RETRIEVAL_TOP_K` / `RERANK_TOP_K` / `MMR_LAMBDA` / `MIN_RELEVANCE_SCORE` / `CHAT_TEMPERATURE` / `RATE_LIMIT_*` 等参数？它们都在 `config/settings.py` 有默认值与注释，需要时**任选其一**覆盖：直接改 `settings.py`，或在 `.env` 加同名键覆盖（键名见 `settings.py` 的 `os.getenv("X", 默认值)`）。完整可覆盖变量清单见 `.env.example`。
+> 想调 `RERANK_TOP_K` / `MMR_LAMBDA` / `MIN_RELEVANCE_SCORE` / `CHAT_TEMPERATURE` / `RATE_LIMIT_*` 等参数？它们都在 `config/settings.py` 有默认值与注释，需要时**任选其一**覆盖：直接改 `settings.py`，或在 `.env` 加同名键覆盖（键名见 `settings.py` 的 `os.getenv("X", 默认值)`）。完整可覆盖变量清单见 `.env.example`。
 
 > ⚠️ **安全提醒**：`HOST` 默认 `127.0.0.1`（仅本机）。**切勿改成 `0.0.0.0`**，避免暴露到局域网。
 

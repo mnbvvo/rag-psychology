@@ -10,8 +10,8 @@ from modules.safety_checker import SafetyChecker
 from config.settings import settings
 from typing import Dict, List, Optional, Union
 
-# 避免超长问题刷屏，日志里只截取前 24 个字符
-_Q_PREVIEW = 24
+# 避免超长问题刷屏，日志里只截取前 48 个字符
+_Q_PREVIEW = 48
 
 
 def _log_query_timings(question: str, age_group, timings: Dict, source_count: int):
@@ -78,6 +78,7 @@ class PsychologyRAGSystem:
                 result["answer"] = safety_result["safety_response"]["message"]
                 result["is_crisis_response"] = True
                 timings["total"] = (time.perf_counter() - t0) * 1000
+                result["timings"] = timings
                 _log_query_timings(question, age_group, timings, 0)
                 return result
 
@@ -94,6 +95,7 @@ class PsychologyRAGSystem:
             result["safety_note"] = safety_result["safety_response"]["message"]
 
         timings["total"] = (time.perf_counter() - t0) * 1000
+        result["timings"] = timings
         _log_query_timings(question, age_group, timings, len(result["sources"]))
         return result
 

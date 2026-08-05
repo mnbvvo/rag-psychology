@@ -10,8 +10,3 @@ langchain-chroma>=0.1.0
 langchain-core>=0.2.0
 chromadb>=0.5.0
 
-# 说明：
-# - langchain / langchain-community / langchain-text-splitters / pypdf / docx2txt
-#   此前未实际使用，或仅被已删除的 modules/document_processor.py 使用，故移除。
-#   若日后要扩展 PDF/Markdown 导入再单独补装对应依赖。
-# - 推荐锁定版本到本项目实测通过的 release，例如用 pip freeze > requirements.lock。

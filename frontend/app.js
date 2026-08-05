@@ -68,6 +68,31 @@ function currentSession() {
   return state.sessions.find((s) => s.id === state.activeSessionId) || state.sessions[0];
 }
 
+function formatMs(value) {
+  const n = typeof value === "number" ? value : parseFloat(value);
+  return Number.isFinite(n) ? `${Math.round(n)}ms` : "-";
+}
+
+function renderTimings(timings, elapsed) {
+  if (!timings && elapsed == null) return "";
+  const parts = [];
+  if (timings) {
+    parts.push(`安全 ${formatMs(timings.safety)}`);
+    parts.push(`嵌入 ${formatMs(timings.embed)}`);
+    parts.push(`检索 ${formatMs(timings.retrieve)}`);
+    parts.push(`生成 ${formatMs(timings.llm)}`);
+    if (elapsed != null) {
+      parts.push(`后端总 ${formatMs(timings.total)}`);
+      parts.push(`总时间 ${formatMs(elapsed)}`);
+    } else {
+      parts.push(`后端总 ${formatMs(timings.total)}`);
+    }
+  } else if (elapsed != null) {
+    parts.push(`总时间 ${formatMs(elapsed)}`);
+  }
+  return `<div class="timing-bar">${parts.map((p) => `<span class="timing-pill">${p}</span>`).join("")}</div>`;
+}
+
 function activePrompt() {
   return state.prompts.find((p) => p.id === state.activePromptId) || state.prompts[0] || { id: "", name: "", content: "" };
 }
@@ -109,7 +134,8 @@ async function loadPromptConfig() {
     const anyPromptId = state.prompts[0]?.id || state.defaultPrompts[0]?.id || "";
     if (!state.compareSelections.a || !getPromptById(state.compareSelections.a).id) state.compareSelections.a = state.defaultPrompts[0]?.id || anyPromptId;
     if (!state.compareSelections.b || !getPromptById(state.compareSelections.b).id) state.compareSelections.b = state.activePromptId || anyPromptId;
-    if (!state.chatPromptId) state.chatPromptId = state.activePromptId || "";
+    // chatPromptId 为空表示"跟随激活提示词"；不要填成 active id，否则下拉会重复显示激活项
+    if (state.chatPromptId && (state.chatPromptId === state.activePromptId || !state.prompts.find((p) => p.id === state.chatPromptId))) state.chatPromptId = "";
   } catch (e) {
     showToast(`读取提示词库失败：${e.message}`, "error");
   }
@@ -433,8 +459,12 @@ function renderSessionItem(s, activeId) {
 
 function renderPromptOptions(selectedId, includeDefault) {
   const options = [];
-  if (includeDefault) options.push(`<option value="">默认激活：${escapeHtml(activePrompt().name)}</option>`);
+  const active = activePrompt();
+  const isActiveSelected = selectedId === active.id;
+  // "默认激活"占位项代表当前激活提示词，避免与列表里的激活项重复
+  if (includeDefault) options.push(`<option value="" ${isActiveSelected ? "selected" : ""}>默认激活：${escapeHtml(active.name)}</option>`);
   state.prompts.forEach((p) => {
+    if (includeDefault && p.id === active.id) return; // 已在"默认激活"占位项中体现
     const sel = p.id === selectedId ? "selected" : "";
     options.push(`<option value="${p.id}" ${sel}>${escapeHtml(p.name)}${p.id === state.activePromptId ? "（激活）" : ""}</option>`);
   });
@@ -449,7 +479,8 @@ function renderMessage(m) {
   const sources = m.sources && m.sources.length
     ? `<div class="sources">${m.sources.map((s) => `<span class="source-chip">[${s.index}] ${escapeHtml(s.title || "来源")}</span>`).join("")}</div>`
     : "";
-  return `<div class="message ${m.role}"><div><div class="message-meta">${m.role === "user" ? "你" : "心理 RAG"}</div><div class="message-bubble">${escapeHtml(m.content)}${sources}</div></div></div>`;
+  const timings = m.role === "assistant" ? renderTimings(m.timings, m.elapsed) : "";
+  return `<div class="message ${m.role}"><div><div class="message-meta">${m.role === "user" ? "你" : "心理 RAG"}</div><div class="message-bubble">${escapeHtml(m.content)}${sources}${timings}</div></div></div>`;
 }
 
 async function sendChat(content) {
@@ -462,9 +493,11 @@ async function sendChat(content) {
   try {
     const body = { question: content };
     if (state.chatPromptId) body.prompt_id = state.chatPromptId;
+    const started = performance.now();
     const data = await api("POST", "/api/query", body);
-    session.messages.push({ role: "assistant", content: data.answer || "（无返回内容）", sources: data.sources || [] });
-    showToast("回答已生成", "success");
+    const elapsed = Math.round(performance.now() - started);
+    session.messages.push({ role: "assistant", content: data.answer || "（无返回内容）", sources: data.sources || [], timings: data.timings || null, elapsed });
+    showToast(`回答已生成 · ${elapsed}ms`, "success");
   } catch (e) {
     session.messages.push({ role: "assistant", content: `请求失败：${e.message}` });
     showToast(e.message, "error");
@@ -539,10 +572,12 @@ function renderCompare() {
 }
 
 function renderCompareCard(side, title, selectedId) {
-  // A/B 两侧均可从「当前库 + 出厂默认库」中任选
+  // A/B 两侧均可从「当前库 + 出厂默认库」中任选；出厂默认里与当前库 id 重复的不再展示，避免"两个默认"
+  const currentIds = new Set(state.prompts.map((p) => p.id));
   const currentOptions = state.prompts.map((p) => `<option value="${p.id}" ${p.id === selectedId ? "selected" : ""}>${escapeHtml(p.name)}${p.id === state.activePromptId ? "（激活）" : ""}</option>`).join("");
-  const defaultOptions = state.defaultPrompts.length
-    ? `<optgroup label="出厂默认">${state.defaultPrompts.map((p) => `<option value="${p.id}" ${p.id === selectedId ? "selected" : ""}>${escapeHtml(p.name)}</option>`).join("")}</optgroup>`
+  const factoryPrompts = state.defaultPrompts.filter((p) => !currentIds.has(p.id));
+  const defaultOptions = factoryPrompts.length
+    ? `<optgroup label="出厂默认">${factoryPrompts.map((p) => `<option value="${p.id}" ${p.id === selectedId ? "selected" : ""}>${escapeHtml(p.name)}</option>`).join("")}</optgroup>`
     : "";
   const options = `${currentOptions}${defaultOptions}`;
   const tagColor = side === "a" ? "a" : "b";
@@ -592,7 +627,11 @@ function fillCompareCard(side, block) {
   if (!block) { answerEl.className = "answer placeholder"; answerEl.textContent = "无记录"; metaEl.textContent = "—"; srcEl.textContent = "-"; return; }
   answerEl.className = "answer";
   answerEl.innerHTML = escapeHtml(block.answer) + renderSources(block.sources);
-  metaEl.textContent = block.ok === false ? "失败" : `完成 · ${block.elapsed}ms`;
+  if (block.ok === false) {
+    metaEl.textContent = "失败";
+  } else {
+    metaEl.innerHTML = renderTimings(block.timings, block.elapsed);
+  }
   srcEl.textContent = `${block.sources?.length || 0} 条`;
 }
 
@@ -632,6 +671,7 @@ async function runCompare() {
       const data = await api("POST", "/api/query", body);
       result.answer = data.answer || "（无返回内容）";
       result.sources = data.sources || [];
+      result.timings = data.timings || null;
       result.ok = true;
     } catch (e) {
       result.answer = `请求失败：${e.message}`;

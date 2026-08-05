@@ -1096,6 +1096,33 @@ button, input, textarea, select {
   margin-bottom: 4px;
 }
 
+/* 耗时展示：双栏对比 + 对话联调共用 */
+.timing-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  white-space: normal;
+}
+
+.message-bubble > .timing-bar {
+  margin-top: 12px;
+}
+
+.timing-pill {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 99px;
+  background: var(--bg);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  font-weight: 500;
+}
+
+.compare-card .answer > .timing-bar {
+  margin-top: 14px;
+}
+
 .field {
   padding: 16px 20px;
   display: flex;

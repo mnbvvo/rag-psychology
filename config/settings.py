@@ -37,17 +37,19 @@ class Settings:
     CHAT_MODEL = os.getenv("CHAT_MODEL", "qwen3.5-35b-a3b")  # 对话生成模型
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v3")  # 向量化模型（与 chroma_db 绑定，换模型须 --reset 重导）
 
+    # 思考/推理模式（仅部分 OpenAI 兼容模型支持，如 Qwen3 / DeepSeek；端点不支持时请把下面的值改为 False，否则可能报 400）
+    ENABLE_THINKING = True  # 是否在请求体注入 enable_thinking 控制思考模式
+
     # RAG 配置（路径锚定到项目根目录，避免 cwd 不同导致找不到文件/库）
     CHROMA_PERSIST_DIR = _resolve_path(
         os.getenv("CHROMA_PERSIST_DIR", "chroma_db"),
         _PROJECT_ROOT,
     )  # 本地向量库持久化目录
     COLLECTION_NAME = os.getenv("COLLECTION_NAME", "psychology_knowledge")  # Chroma 集合名
-    RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "5"))  # 最终喂给模型的最相关文档数
-    RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "3"))  # 相似度召回后重排截断保留的条数
+    RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "3"))  # 最终喂给模型/展示的来源条数（similarity 与 mmr 两模式统一使用此值）
 
     # 检索策略
-    FETCH_K = int(os.getenv("FETCH_K", "10"))  # 相似度检索初召回候选数（应 >= RETRIEVAL_TOP_K）
+    FETCH_K = int(os.getenv("FETCH_K", "10"))  # 相似度检索初召回候选数（应 >= RERANK_TOP_K，即最终条数）
     SEARCH_TYPE = os.getenv("SEARCH_TYPE", "similarity")  # similarity 或 mmr（最大边际相关，兼顾多样性）
     MMR_LAMBDA = float(os.getenv("MMR_LAMBDA", "0.5"))  # mmr 模式下多样性权重：0=最多样，1=最相关
     MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.0"))  # 相关性下限，0=不启用（建议 0.2~0.35）

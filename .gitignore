@@ -1,8 +1,7 @@
 # 不提交真实密钥（.env.example 可提交）
 .env
 
-# 本地向量库与虚拟环境
-chroma_db/
+# 虚拟环境
 .venv/
 venv/
 

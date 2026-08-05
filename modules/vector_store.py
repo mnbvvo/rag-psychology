@@ -92,7 +92,7 @@ class PsychologyVectorStore:
         filter_dict: Optional[Dict] = None,
     ) -> List[Document]:
         """语义相似度搜索"""
-        k = k or settings.RETRIEVAL_TOP_K
+        k = k or settings.RERANK_TOP_K
         return self.vectorstore.similarity_search(query, k=k, filter=filter_dict)
 
     def similarity_search_with_relevance_scores(
@@ -102,7 +102,7 @@ class PsychologyVectorStore:
         filter_dict: Optional[Dict] = None,
     ) -> List[tuple]:
         """带相关性分数的语义搜索（分数越高越相关）"""
-        k = k or settings.RETRIEVAL_TOP_K
+        k = k or settings.RERANK_TOP_K
         return self.vectorstore.similarity_search_with_relevance_scores(
             query, k=k, filter=filter_dict
         )
@@ -116,7 +116,7 @@ class PsychologyVectorStore:
         filter_dict: Optional[Dict] = None,
     ) -> List[Document]:
         """最大边际相关性搜索（平衡相关性和多样性）"""
-        k = k or settings.RETRIEVAL_TOP_K
+        k = k or settings.RERANK_TOP_K
         return self.vectorstore.max_marginal_relevance_search(
             query,
             k=k,
@@ -141,7 +141,7 @@ class PsychologyVectorStore:
 
     def as_retriever(self, k: int = None, search_type: str = "similarity"):
         """返回LangChain retriever对象"""
-        k = k or settings.RETRIEVAL_TOP_K
+        k = k or settings.RERANK_TOP_K
 
         if search_type == "mmr":
             return self.vectorstore.as_retriever(
