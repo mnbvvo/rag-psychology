@@ -58,6 +58,9 @@ class Settings:
     # 生成参数
     CHAT_TEMPERATURE = float(os.getenv("CHAT_TEMPERATURE", "0.3"))  # 生成温度，事实/建议类问答偏低以减少幻觉
 
+    # 多轮对话记忆
+    MAX_HISTORY_TURNS = int(os.getenv("MAX_HISTORY_TURNS", "5"))  # 保留最近多少轮对话；超过则对更早的历史做摘要压缩
+
     # 安全配置（路径锚定到项目根目录，避免 cwd 不同导致找不到文件）
     CRISIS_KEYWORDS_FILE = _resolve_path(
         os.getenv("CRISIS_KEYWORDS_FILE", "config/crisis_keywords.json"),

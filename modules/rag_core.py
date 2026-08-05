@@ -99,6 +99,37 @@ class PsychologyRAG:
 
         return docs
 
+    def compress_messages(self, messages: List[Dict]) -> List[Dict]:
+        """对话历史压缩：保留最近 MAX_HISTORY_TURNS 轮，对更早历史做摘要。
+
+        每轮约 2 条消息（human + ai）。摘要失败时直接截断，保证可用性。
+        """
+        max_turns = settings.MAX_HISTORY_TURNS
+        if max_turns <= 0 or len(messages) <= max_turns * 2:
+            return messages
+
+        keep_count = max_turns * 2
+        recent = messages[-keep_count:]
+        older = messages[:-keep_count]
+
+        try:
+            conversation_text = "\n\n".join([
+                f"{'用户' if m['role'] == 'human' else '助手'}：{m['content']}"
+                for m in older
+            ])
+            summary_prompt = ChatPromptTemplate.from_messages([
+                ("human", "请用一段话简要总结以下心理咨询对话的要点，保留用户核心诉求和关键建议，控制在 200 字以内：\n\n{conversation}"),
+            ])
+            summary_chain = summary_prompt | self.llm | StrOutputParser()
+            summary = summary_chain.invoke({"conversation": conversation_text})
+            if summary and summary.strip():
+                return [{"role": "human", "content": f"前文摘要：{summary.strip()}"}] + recent
+        except Exception:
+            # 摘要失败时回退到截断
+            pass
+
+        return recent
+
     def generate(
         self,
         question: str,
@@ -107,12 +138,14 @@ class PsychologyRAG:
         system_prompt_override: Optional[str] = None,
         prompt_id: Optional[str] = None,
         timings: Optional[Dict] = None,
+        messages: Optional[List[Dict]] = None,
     ) -> Dict:
         """基于检索到的内容生成回答
 
         system_prompt_override：非 None 时，使用传入文本作为系统提示词基础，
         便于前端在不落盘的情况下预览/对比不同提示词的效果。
         prompt_id：指定使用提示词库中的某条提示词（与 override 互斥，override 优先）。
+        messages：多轮对话历史；提供时会把完整历史拼入 prompt，question 仅用于检索与日志。
         """
         # 构建上下文文本
         context_text = "\n\n".join(
@@ -132,18 +165,30 @@ class PsychologyRAG:
             prompt_id=prompt_id,
         )
 
-        # 构建RAG prompt
-        rag_prompt = ChatPromptTemplate.from_messages([
-            ("system", system_prompt),
-            ("human", "{question}"),
-        ])
-
-        # 创建链
-        chain = rag_prompt | self.llm | StrOutputParser()
+        # 多轮模式：system + 压缩后的历史消息（最后一条为当前问题）
+        if messages:
+            compressed = self.compress_messages(messages)
+            prompt_messages = [("system", system_prompt)]
+            for m in compressed:
+                if m["role"] == "human":
+                    prompt_messages.append(("human", m["content"]))
+                elif m["role"] == "ai":
+                    prompt_messages.append(("ai", m["content"]))
+            rag_prompt = ChatPromptTemplate.from_messages(prompt_messages)
+            chain = rag_prompt | self.llm | StrOutputParser()
+            invoke_input = {}
+        else:
+            # 单轮模式：system + 当前问题
+            rag_prompt = ChatPromptTemplate.from_messages([
+                ("system", system_prompt),
+                ("human", "{question}"),
+            ])
+            chain = rag_prompt | self.llm | StrOutputParser()
+            invoke_input = {"question": question}
 
         # 生成回答（LLM 调用是主要耗时来源，单独计时）
         t0 = time.perf_counter()
-        answer = chain.invoke({"question": question})
+        answer = chain.invoke(invoke_input)
         if timings is not None:
             timings["llm"] = (time.perf_counter() - t0) * 1000
 
@@ -170,13 +215,14 @@ class PsychologyRAG:
         system_prompt_override: Optional[str] = None,
         prompt_id: Optional[str] = None,
         timings: Optional[Dict] = None,
+        messages: Optional[List[Dict]] = None,
     ) -> RAGState:
         """异步执行完整的RAG流程"""
         # 检索
         context = self.retrieve(question, age_group, timings=timings)
 
         # 生成
-        result = self.generate(question, context, age_group, system_prompt_override, prompt_id, timings=timings)
+        result = self.generate(question, context, age_group, system_prompt_override, prompt_id, timings=timings, messages=messages)
 
         return RAGState(
             question=question,
@@ -193,13 +239,14 @@ class PsychologyRAG:
         system_prompt_override: Optional[str] = None,
         prompt_id: Optional[str] = None,
         timings: Optional[Dict] = None,
+        messages: Optional[List[Dict]] = None,
     ) -> RAGState:
         """同步执行完整的RAG流程"""
         # 检索
         context = self.retrieve(question, age_group, timings=timings)
 
         # 生成
-        result = self.generate(question, context, age_group, system_prompt_override, prompt_id, timings=timings)
+        result = self.generate(question, context, age_group, system_prompt_override, prompt_id, timings=timings, messages=messages)
 
         return RAGState(
             question=question,

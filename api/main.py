@@ -17,8 +17,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
-from typing import List, Optional
+from pydantic import BaseModel, Field, model_validator
+from typing import List, Optional, Dict
 from modules import rag_system
 from modules.prompt_store import (
     get_prompt_config,
@@ -69,8 +69,12 @@ async def rate_limit_middleware(request: Request, call_next):
 
 
 class QueryRequest(BaseModel):
-    """查询请求"""
-    question: str = Field(..., description="用户问题", min_length=1, max_length=2000)
+    """查询请求：支持单轮 question 或多轮 messages。"""
+    question: Optional[str] = Field(None, description="用户当前问题（单轮模式，与 messages 二选一）", min_length=1, max_length=2000)
+    messages: Optional[List[Dict[str, str]]] = Field(
+        None,
+        description="多轮对话历史，每条含 role 与 content；role 可为 human/ai/user/assistant。最后一条须为用户问题。",
+    )
     age_group: Optional[str] = Field(
         None,
         description="年龄段分桶：child / early_teen / teen / late_teen。留空表示不限年龄，语气默认按 teen。",
@@ -84,6 +88,20 @@ class QueryRequest(BaseModel):
         None,
         description="可选：使用提示词库中指定 id 的提示词（与 override 互斥，override 优先）。",
     )
+
+    @model_validator(mode="after")
+    def check_question_or_messages(self):
+        if not self.question and not self.messages:
+            raise ValueError("必须提供 question 或 messages 之一")
+        if self.messages:
+            if not isinstance(self.messages, list) or len(self.messages) == 0:
+                raise ValueError("messages 不能为空数组")
+            for i, m in enumerate(self.messages):
+                if not isinstance(m, dict) or "role" not in m or "content" not in m:
+                    raise ValueError(f"messages[{i}] 必须包含 role 和 content")
+                if m["role"] not in ("human", "ai", "user", "assistant"):
+                    raise ValueError(f"messages[{i}].role 必须是 human/ai/user/assistant 之一")
+        return self
 
 
 class QueryResponse(BaseModel):
@@ -109,6 +127,7 @@ async def query(request: QueryRequest):
         result = await run_in_threadpool(
             rag_system.query,
             question=request.question,
+            messages=request.messages,
             age_group=request.age_group,
             check_safety=True,
             system_prompt_override=request.system_prompt_override,
@@ -116,6 +135,9 @@ async def query(request: QueryRequest):
         )
 
         return QueryResponse(**result)
+    except ValueError as e:
+        # 参数校验类错误返回 400，便于前端定位
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         # 不把内部异常细节（路径/堆栈）回传给客户端
         raise HTTPException(status_code=500, detail="内部处理失败，请稍后重试。")

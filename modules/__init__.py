@@ -48,15 +48,46 @@ class PsychologyRAGSystem:
 
     def query(
         self,
-        question: str,
+        question: str = None,
         age_group: str = None,
         check_safety: bool = True,
         system_prompt_override: Optional[str] = None,
         prompt_id: Optional[str] = None,
+        messages: Optional[List[Dict]] = None,
     ) -> Dict:
-        """查询系统"""
+        """查询系统
+
+        支持单轮 question 或多轮 messages。多轮模式下，从最后一条 human/user
+        消息提取当前问题用于检索与安全检测，完整历史传给 LLM 作为上下文。
+        """
+        # 统一归一化 messages，并提取当前问题
+        if messages:
+            norm_messages = []
+            for m in messages:
+                role = m.get("role", "")
+                content = m.get("content", "")
+                if role in ("user", "human"):
+                    norm_messages.append({"role": "human", "content": content})
+                elif role in ("assistant", "ai"):
+                    norm_messages.append({"role": "ai", "content": content})
+                else:
+                    norm_messages.append({"role": role, "content": content})
+            # 当前问题取最后一条 human 消息
+            current_question = ""
+            for m in reversed(norm_messages):
+                if m["role"] == "human":
+                    current_question = m["content"]
+                    break
+            if not current_question:
+                raise ValueError("messages 中未找到有效的用户问题")
+        elif question:
+            current_question = question
+            norm_messages = [{"role": "human", "content": question}]
+        else:
+            raise ValueError("必须提供 question 或 messages")
+
         result = {
-            "question": question,
+            "question": current_question,
             "age_group": age_group,
             "answer": "",
             "sources": [],
@@ -66,10 +97,10 @@ class PsychologyRAGSystem:
         timings: Dict[str, float] = {}
         t0 = time.perf_counter()
 
-        # 安全检查
+        # 安全检查（基于当前问题）
         if check_safety:
             ts = time.perf_counter()
-            safety_result = self.safety_checker.check_and_respond(question)
+            safety_result = self.safety_checker.check_and_respond(current_question)
             timings["safety"] = (time.perf_counter() - ts) * 1000
             result["safety_check"] = safety_result
 
@@ -79,12 +110,12 @@ class PsychologyRAGSystem:
                 result["is_crisis_response"] = True
                 timings["total"] = (time.perf_counter() - t0) * 1000
                 result["timings"] = timings
-                _log_query_timings(question, age_group, timings, 0)
+                _log_query_timings(current_question, age_group, timings, 0)
                 return result
 
         # 执行RAG查询
         rag_result = self.rag.run(
-            question, age_group, system_prompt_override, prompt_id, timings=timings
+            current_question, age_group, system_prompt_override, prompt_id, timings=timings, messages=norm_messages
         )
         result["answer"] = rag_result["answer"]
         result["sources"] = rag_result["sources"]
@@ -96,7 +127,7 @@ class PsychologyRAGSystem:
 
         timings["total"] = (time.perf_counter() - t0) * 1000
         result["timings"] = timings
-        _log_query_timings(question, age_group, timings, len(result["sources"]))
+        _log_query_timings(current_question, age_group, timings, len(result["sources"]))
         return result
 
 # 创建全局实例

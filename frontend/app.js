@@ -391,6 +391,9 @@ function renderChat() {
   const session = currentSession();
   const messages = session.messages || [];
   const chatPrompt = getPromptById(state.chatPromptId);
+  // 保留输入框中尚未发送的内容，避免异步回答返回时整页重渲染将其清空
+  const prevInput = page.querySelector("#chat-input");
+  const draft = prevInput ? prevInput.value : "";
   page.innerHTML = `
     <div class="chat-layout">
       <aside class="sidebar">
@@ -425,13 +428,16 @@ function renderChat() {
       </aside>
     </div>`;
 
+  const restoredInput = page.querySelector("#chat-input");
+  if (restoredInput && draft) restoredInput.value = draft;
+
   page.querySelectorAll("[data-session]").forEach((b) => b.addEventListener("click", (e) => { if (e.target.dataset.deleteSession) return; state.activeSessionId = b.dataset.session; saveState(); renderChat(); }));
   page.querySelectorAll("[data-delete-session]").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); if (state.sessions.length === 1) return showToast("至少保留一个对话", "error"); state.sessions = state.sessions.filter((s) => s.id !== b.dataset.deleteSession); state.activeSessionId = state.sessions[0].id; saveState(); renderChat(); }));
   page.querySelector("#new-session").addEventListener("click", () => { const id = `session-${Date.now()}`; state.sessions.unshift({ id, name: "新的对话", createdAt: Date.now(), messages: [] }); state.activeSessionId = id; saveState(); renderChat(); });
   page.querySelector("#rename-session").addEventListener("click", () => { const name = prompt("输入新的对话名称", session.name); if (name?.trim()) { session.name = name.trim(); saveState(); renderChat(); } });
   page.querySelector("#export-session").addEventListener("click", exportSession);
   const form = page.querySelector("#chat-form");
-  form.addEventListener("submit", async (e) => { e.preventDefault(); const input = page.querySelector("#chat-input"); const content = input.value.trim(); if (!content) return; await sendChat(content); });
+  form.addEventListener("submit", async (e) => { e.preventDefault(); const input = page.querySelector("#chat-input"); const content = input.value.trim(); if (!content) return; input.value = ""; input.style.height = "auto"; await sendChat(content); });
   page.querySelector("#chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); page.querySelector("#chat-form").requestSubmit(); } });
   page.querySelector("#chat-prompt-select").addEventListener("change", (e) => { state.chatPromptId = e.target.value; saveState(); renderChat(); });
   // 欢迎页快捷问题：点击后直接填入输入框并发送
@@ -491,7 +497,9 @@ async function sendChat(content) {
   const btn = document.querySelector("#send-btn");
   btn.disabled = true; btn.textContent = "…";
   try {
-    const body = { question: content };
+    // 多轮记忆：把当前会话的全部历史作为 messages 一起发给后端（不止当前一问）
+    const history = session.messages.map((m) => ({ role: m.role, content: m.content }));
+    const body = { messages: history };
     if (state.chatPromptId) body.prompt_id = state.chatPromptId;
     const started = performance.now();
     const data = await api("POST", "/api/query", body);
@@ -526,7 +534,7 @@ function renderCompare() {
       <aside class="compare-sidebar">
         <div class="field">
           <label for="compare-input">测试问题</label>
-          <textarea id="compare-input" placeholder="输入一个问题，分别用两套提示词跑 RAG 对比">${escapeHtml(state.compareInput)}</textarea>
+          <textarea id="compare-input" rows="4" placeholder="输入一个问题，分别用两套提示词跑 RAG 对比">${escapeHtml(state.compareInput)}</textarea>
         </div>
         <div class="run-actions">
           <button class="primary-btn" id="run-compare">运行对比</button>
@@ -551,7 +559,7 @@ function renderCompare() {
       </section>
     </div>`;
 
-  page.querySelector("#compare-input").addEventListener("input", (e) => { state.compareInput = e.target.value; saveState(); });
+  page.querySelector("#compare-input").addEventListener("input", (e) => { state.compareInput = e.target.value; state.currentCompare = null; saveState(); });
   page.querySelector("#run-compare").addEventListener("click", runCompare);
   page.querySelector("#clear-compare").addEventListener("click", clearCompare);
   page.querySelectorAll(".compare-prompt-select").forEach((sel) => {
@@ -606,6 +614,7 @@ function loadCompareRecord(id) {
   const r = state.compareHistory.find((x) => String(x.id) === String(id));
   if (!r) return;
   state.compareInput = r.input;
+  state.currentCompare = null;
   saveState();
   renderCompare();
   fillCompareCard("a", r.a);
