@@ -85,6 +85,25 @@ class PsychologyRAG:
                 top = scored[: settings.RERANK_TOP_K]
                 docs = [doc for doc, _ in top]
 
+        # 混合检索：向量候选 ∪ BM25 关键词候选（去重），扩大召回面交给重排器精排。
+        # 仅重排开启时生效（最终排序依赖重排器统一精排）；关键词检索异常自动回退纯向量。
+        if rerank_enabled and settings.HYBRID_ENABLED and docs:
+            try:
+                from modules.hybrid_search import keyword_search
+
+                t_h = time.perf_counter()
+                kw_docs = keyword_search(question, k=settings.HYBRID_KEYWORD_K)
+                seen = {d.metadata.get("card_id") for d in docs}
+                for d in kw_docs:
+                    cid = d.metadata.get("card_id")
+                    if cid and cid not in seen:
+                        docs.append(d)
+                        seen.add(cid)
+                if timings is not None:
+                    timings["hybrid"] = (time.perf_counter() - t_h) * 1000
+            except Exception as e:
+                print(f"[hybrid][WARN] 关键词检索失败，仅用向量召回: {e}", flush=True)
+
         # 本地重排：对候选按「问题 × 文档」逐对打分，取 top_k
         if rerank_enabled and docs:
             try:

@@ -55,6 +55,12 @@ class Settings:
     MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.2"))  # 相关性下限，0=不启用（建议 0.2~0.35）
     AGE_GROUPS = ["child", "early_teen", "teen", "late_teen"]  # 年龄分桶（检索过滤 + 回答语气适配）
 
+    # 混合检索（向量召回 ∪ BM25 关键词召回 → 重排精排）
+    # 心理领域高频症状词（失眠/厌学/霸凌等）词面命中比语义匹配更可靠；
+    # 与重排配合：多路召回取并集去重，由重排器统一精排，无需分数融合。
+    HYBRID_ENABLED = os.getenv("HYBRID_ENABLED", "true").lower() == "true"  # 是否启用混合检索（仅重排开启时生效）
+    HYBRID_KEYWORD_K = int(os.getenv("HYBRID_KEYWORD_K", "5"))  # 关键词（BM25）召回条数，并入向量候选后交给重排器
+
     # 本地重排序（Cross-Encoder，bge-reranker-v2-m3）
     # 召回候选后按「问题 × 文档」逐对打分精排，替代仅按向量分数截断的假重排。
     # 模型失败/异常时自动回退到原排序逻辑，不影响检索可用性。

@@ -462,6 +462,13 @@ async def startup_event():
                 print("[startup] 本地重排模型已加载（bge-reranker-v2-m3）")
             except Exception as e:
                 print(f"[startup][WARN] 重排模型预热失败，问答时将回退原排序: {e}")
+            # 混合检索 BM25 索引预热（失败静默，首次问答时懒构建兜底）
+            try:
+                from modules.hybrid_search import warm_up_index
+
+                warm_up_index()
+            except Exception:
+                pass
 
         threading.Thread(target=_warm_reranker, daemon=True).start()
     print("=" * 50)
