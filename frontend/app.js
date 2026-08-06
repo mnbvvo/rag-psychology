@@ -245,14 +245,42 @@ function renderPromptItem(p, activeId) {
     </div>`;
 }
 
-function bindPromptManagerEvents(prompt) {
+// 切换选中提示词时的局部刷新：只更新列表选中态与编辑器内容，不重建整页（消除抖动）
+function refreshPromptEditor() {
   const page = document.querySelector("#page-prompt");
+  const prompt = selectedPrompt();
+  const activeId = state.activePromptId;
 
+  // 列表选中态
+  page.querySelectorAll(".prompt-item").forEach((el) => {
+    const btn = el.querySelector("[data-prompt-id]");
+    el.classList.toggle("active", !!btn && btn.dataset.promptId === prompt.id);
+  });
+
+  const nameInput = page.querySelector("#prompt-name");
+  const contentInput = page.querySelector("#prompt-content");
+  const previewBox = page.querySelector("#preview-box");
+  const statusEl = page.querySelector("#editor-status");
+  const setActiveBtn = page.querySelector("#set-active-btn");
+  const charCount = page.querySelector("#prompt-chars");
+
+  if (nameInput) nameInput.value = prompt.name;
+  if (contentInput) contentInput.value = prompt.content;
+  if (previewBox) previewBox.innerHTML = prompt.content ? escapeHtml(renderPreview(prompt.content)) : '<span class="placeholder">在左侧编辑器输入内容以查看预览</span>';
+  if (statusEl) statusEl.textContent = prompt.id === activeId ? "当前激活 · RAG 默认使用" : "未激活";
+  if (setActiveBtn) setActiveBtn.disabled = prompt.id === activeId || !prompt.id;
+  if (charCount) charCount.textContent = `${prompt.content?.length || 0} 字`;
+}
+
+// 提示词列表事件绑定（选中切换 / 删除）：列表被局部重建后需重新调用。
+// 注意：新建按钮(#add-prompt)在列表容器之外，由 renderPromptManager 整页渲染时绑定一次，避免重复监听。
+function bindPromptListEvents(page) {
   page.querySelectorAll("[data-prompt-id]").forEach((b) => {
     b.addEventListener("click", () => {
       state.selectedPromptId = b.dataset.promptId;
       saveState();
-      renderPromptManager();
+      // 局部刷新选中项与编辑器内容，避免整页重建导致抖动
+      refreshPromptEditor();
     });
   });
 
@@ -265,12 +293,31 @@ function bindPromptManagerEvents(prompt) {
       await updatePrompt({ deleteId: p.id });
     });
   });
+}
 
+// 提示词页局部刷新：重建列表（激活 badge / 新增项 / 字数）+ 刷新编辑器，不重建整页（消除抖动）
+function refreshPromptPage() {
+  const page = document.querySelector("#page-prompt");
+  if (!page) return;
+  const list = page.querySelector("#prompt-list");
+  if (list) {
+    list.innerHTML = state.prompts.map((p) => renderPromptItem(p, state.activePromptId)).join("");
+    bindPromptListEvents(page);
+  }
+  refreshPromptEditor();
+}
+
+function bindPromptManagerEvents(prompt) {
+  const page = document.querySelector("#page-prompt");
+
+  bindPromptListEvents(page);
+
+  // 新建按钮在列表容器外，仅在整页渲染时绑定一次（避免局部刷新重复监听）
   const addBtn = page.querySelector("#add-prompt");
   if (addBtn) addBtn.addEventListener("click", addPrompt);
 
   const setActiveBtn = page.querySelector("#set-active-btn");
-  if (setActiveBtn) setActiveBtn.addEventListener("click", () => setActivePrompt(prompt.id));
+  if (setActiveBtn) setActiveBtn.addEventListener("click", () => setActivePrompt(selectedPrompt().id));
 
   const saveBtn = page.querySelector("#save-prompt-btn");
   if (saveBtn) saveBtn.addEventListener("click", saveSelectedPrompt);
@@ -281,24 +328,27 @@ function bindPromptManagerEvents(prompt) {
   const charCount = page.querySelector("#prompt-chars");
 
   if (nameInput) {
-    // 实时同步名字到 state，避免按 Ctrl+S 时还没触发 change 导致保存旧名字
+    // 实时同步名字到 state，避免按 Ctrl+S 时还没触发 change 导致保存旧名字。
+    // 用 selectedPrompt() 实时取当前选中项（选中切换后闭包里的 prompt 已过期）
     nameInput.addEventListener("input", () => {
-      if (!prompt.id) return;
-      prompt.name = nameInput.value;
+      const p = selectedPrompt();
+      if (!p.id) return;
+      p.name = nameInput.value;
       saveState();
       // 只刷新列表项文字，不重绘整个编辑器，避免输入焦点丢失
-      const listNameEl = document.querySelector(`#prompt-name-${prompt.id}`);
+      const listNameEl = document.querySelector(`#prompt-name-${p.id}`);
       if (listNameEl) listNameEl.textContent = nameInput.value || "未命名";
     });
   }
 
   if (contentInput) {
     contentInput.addEventListener("input", () => {
-      if (!prompt.id) return;
-      prompt.content = contentInput.value;
+      const p = selectedPrompt();
+      if (!p.id) return;
+      p.content = contentInput.value;
       saveState();
-      if (previewBox) previewBox.textContent = renderPreview(prompt.content);
-      if (charCount) charCount.textContent = `${prompt.content.length} 字`;
+      if (previewBox) previewBox.textContent = renderPreview(p.content);
+      if (charCount) charCount.textContent = `${p.content.length} 字`;
     });
   }
 }
@@ -312,7 +362,13 @@ async function updatePrompt(payload) {
     const stillExists = state.prompts.find((p) => p.id === state.selectedPromptId);
     if (!stillExists) state.selectedPromptId = state.activePromptId || state.prompts[0]?.id || "";
     saveState();
-    render();
+    // 提示词页：局部刷新列表与编辑器，避免整页重建抖动；
+    // 仅当选中项已不存在（如删除了正在编辑的那条）时才整页渲染兜底
+    if (state.activePage === "prompt" && stillExists) {
+      refreshPromptPage();
+    } else {
+      render();
+    }
     showToast("提示词库已同步", "success");
   } catch (e) {
     showToast(`同步失败：${e.message}`, "error");
@@ -328,7 +384,12 @@ async function addPrompt() {
     state.activePromptId = data.config.activeId;
     state.selectedPromptId = data.config.activeId; // 新增后自动选中并激活
     saveState();
-    render();
+    // 新增走局部刷新（新列表项插入 + 编辑器切换），不整页重建
+    if (state.activePage === "prompt") {
+      refreshPromptPage();
+    } else {
+      render();
+    }
     showToast("已新增提示词", "success");
   } catch (e) {
     showToast(`新增失败：${e.message}`, "error");
@@ -405,7 +466,7 @@ function renderChat() {
           <div class="info-block">
             <h3>请求状态</h3>
             <div class="info-row"><span>后端连接</span><strong id="insp-conn">检测中</strong></div>
-            <div class="info-row"><span>提示词来源</span><strong>${state.chatPromptId ? "手动选择" : "默认激活"}</strong></div>
+            <div class="info-row"><span>提示词来源</span><strong id="chat-prompt-src">${state.chatPromptId ? "手动选择" : "默认激活"}</strong></div>
           </div>
         </div>
       </aside>
@@ -422,7 +483,16 @@ function renderChat() {
   const form = page.querySelector("#chat-form");
   form.addEventListener("submit", async (e) => { e.preventDefault(); const input = page.querySelector("#chat-input"); const content = input.value.trim(); if (!content) return; input.value = ""; input.style.height = "auto"; await sendChat(content); });
   page.querySelector("#chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); page.querySelector("#chat-form").requestSubmit(); } });
-  page.querySelector("#chat-prompt-select").addEventListener("change", (e) => { state.chatPromptId = e.target.value; saveState(); renderChat(); });
+  // 切换提示词：只局部更新下拉预览与来源文字，不整页重建（避免消息列表滚到底、页面抖动）
+  page.querySelector("#chat-prompt-select").addEventListener("change", (e) => {
+    state.chatPromptId = e.target.value;
+    saveState();
+    const chatPrompt = state.chatPromptId ? getPromptById(state.chatPromptId) : activePrompt();
+    const preview = page.querySelector("#chat-prompt-preview");
+    if (preview) preview.textContent = chatPrompt.content || "";
+    const src = page.querySelector("#chat-prompt-src");
+    if (src) src.textContent = state.chatPromptId ? "手动选择" : "默认激活";
+  });
   // 欢迎页快捷问题：点击后直接填入输入框并发送
   page.querySelectorAll(".suggestion").forEach((b) => b.addEventListener("click", () => {
     const input = page.querySelector("#chat-input");
@@ -645,7 +715,8 @@ function renderCompare() {
   page.querySelector("#run-compare").addEventListener("click", runCompare);
   page.querySelector("#clear-compare").addEventListener("click", clearCompare);
   page.querySelectorAll(".compare-prompt-select").forEach((sel) => {
-    sel.addEventListener("change", (e) => { state.compareSelections[e.target.dataset.side] = e.target.value; saveState(); renderCompare(); });
+    // 切换 A/B 提示词：select 原生即显示选中项，无需整页重建（避免抖动）
+    sel.addEventListener("change", (e) => { state.compareSelections[e.target.dataset.side] = e.target.value; saveState(); });
   });
   bindCompareHistory();
 
@@ -705,7 +776,12 @@ async function deleteCompareRecord(id) {
     await api("DELETE", `/api/compare-history/${encodeURIComponent(id)}`);
     state.compareHistory = state.compareHistory.filter((x) => String(x.id) !== String(id));
     saveState();
-    renderCompare();
+    // 局部更新：只重建对比历史列表，不动输入框与结果卡片（避免抖动）
+    const hist = document.querySelector("#compare-history");
+    if (hist) {
+      hist.innerHTML = renderCompareHistory();
+      bindCompareHistory();
+    }
     showToast("已删除对比记录", "success");
   } catch (e) {
     showToast(`删除失败：${e.message}`, "error");
@@ -727,7 +803,9 @@ function loadCompareRecord(id) {
   state.compareInput = r.input;
   state.currentCompare = null;
   saveState();
-  renderCompare();
+  // 局部更新：只改问题输入框与两侧结果卡片，不重建整页（避免抖动）
+  const inputEl = document.querySelector("#compare-input");
+  if (inputEl) inputEl.value = r.input;
   fillCompareCard("a", r.a);
   fillCompareCard("b", r.b);
 }

@@ -50,8 +50,8 @@ requirements.txt        Python 依赖
 
 ```dotenv
 OPENAI_API_KEY=你的API密钥
-OPENAI_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1  # OpenAI 兼容接口（换 MaaS 端点时覆盖）
-CHAT_MODEL=qwen3.6-flash                                                                # 对话模型（实际部署按需覆盖，例如 deepseek-v4-flash）
+OPENAI_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1  # OpenAI 兼容接口
+CHAT_MODEL=qwen3.6-flash       # 对话模型
 ```
 
 > 想调 `RERANK_TOP_K` / `MMR_LAMBDA` / `MIN_RELEVANCE_SCORE` / `CHAT_TEMPERATURE` / `RATE_LIMIT_*` 等参数？它们都在 `config/settings.py` 有默认值与注释，需要时**任选其一**覆盖：直接改 `settings.py`，或在 `.env` 加同名键覆盖（键名见 `settings.py` 的 `os.getenv("X", 默认值)`）。完整可覆盖变量清单见 `.env.example`。
@@ -241,7 +241,11 @@ modules/
 - `db/crud.py`：`get_db()` 是上下文管理器，退出自动 commit、异常回滚、始终关闭连接。
 
 ### 数据表（5 张）
-
+sessions：聊天会话（浏览器一个标签页 = 1 次对话）
+messages：会话里面一条一条的用户 / AI 消息
+crisis_audit：心理风险命中日志（合规留痕，重中之重，心理产品强制审计）
+prompts：系统提示词模板，支持切换 RAG 默认 Prompt
+compare_history：AB 测试记录，用来对比两套大模型返回结果
 | 表 | 字段 | 说明 |
 |---|---|---|
 | `sessions` | `id`(PK, String36, 缺省 `uuid4().hex`)、`title`(String255, 默认"新会话")、`created_at`、`updated_at` | 一次完整对话；`messages` 级联删除 |
