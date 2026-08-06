@@ -27,6 +27,32 @@ def get_db():
         db.close()
 
 
+# 未命名会话的占位标题集合：命中即视为"还没取名"，首次提问时自动命名。
+# 注意历史遗留：后端旧默认名是"新会话"，前端创建会话传的默认名是"新的对话"，
+# 两个都要认，否则自动命名条件永远不成立（曾导致标题一直停留在占位名）。
+_UNNAMED_TITLES = ("", "新会话", "新的对话")
+
+
+def _auto_title(db, session_id: str, fallback: str) -> str:
+    """为未命名会话生成标题：优先取该会话最早的一条用户消息，否则用 fallback。
+
+    注意 SessionLocal 是 autoflush=False，新追加的 human 消息不会混入查询，
+    因此这里拿到的始终是会话里最早那条用户问题（对首次提问的会话则回退到 fallback）。
+    """
+    first = (
+        db.execute(
+            select(Message)
+            .where(Message.session_id == session_id, Message.role == "human")
+            .order_by(Message.id.asc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+    text = (first.content if first and first.content else fallback) or "新对话"
+    return " ".join(text.split())[:30]
+
+
 def ensure_session(db, session_id: str, title: str | None = None) -> Session:
     """确保会话行存在（不存在则按 id 创建）。"""
     sess = db.get(Session, session_id)
@@ -78,8 +104,26 @@ def append_turn(
     sess = db.get(Session, session_id)
     if sess is not None:
         sess.updated_at = datetime.now(timezone.utc)
-        if title and (not sess.title or sess.title == "新会话"):
-            sess.title = title[:255]
+        # 未命名会话：首次提问时用最早一条用户消息自动命名（不再停留在"新的对话"）
+        if title and sess.title in _UNNAMED_TITLES:
+            sess.title = _auto_title(db, session_id, title)
+
+
+def rename_unnamed_sessions(db) -> int:
+    """把历史遗留的占位标题会话（"新的对话"/"新会话"/空）按最早一条用户消息自动命名。
+
+    服务启动时调用一次，幂等：只处理仍未命名的会话，已命名的保持不变。
+    返回本次改名的会话数。
+    """
+    renamed = 0
+    rows = db.execute(select(Session)).scalars().all()
+    for sess in rows:
+        if sess.title in _UNNAMED_TITLES:
+            new_title = _auto_title(db, sess.id, sess.title)
+            if new_title and new_title != sess.title:
+                sess.title = new_title
+                renamed += 1
+    return renamed
 
 
 def log_crisis(

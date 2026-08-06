@@ -98,6 +98,10 @@ class QueryRequest(BaseModel):
         None,
         description="会话 id（前端本地生成，如 session-<timestamp>）；不传则由服务端生成并在响应中返回。用于把多轮对话与危机审计持久化到关系库。",
     )
+    title: Optional[str] = Field(
+        None,
+        description="可选：会话标题提示（前端在首次提问时传入问题前若干字）。服务端仅在会话标题仍是占位名（如“新的对话”）时用它自动命名，已命名的会话不受影响。",
+    )
     persist: Optional[bool] = Field(
         True,
         description="是否将本轮对话持久化到关系库（sessions/messages）。对话联调页应保留默认 true；"
@@ -188,7 +192,9 @@ async def query(request: QueryRequest):
                         session_id,
                         current_question,
                         answer,
-                        title=current_question[:50] if current_question else None,
+                        # 自动命名提示：优先用前端首次提问传入的标题，否则回退到当前问题；
+                        # 服务端只会在会话标题仍为占位名时采纳（见 crud._auto_title）
+                        title=(request.title or current_question or None),
                     )
                     sc = result.get("safety_check")
                     if sc and sc.get("is_crisis"):
@@ -435,6 +441,14 @@ async def startup_event():
     settings.validate()
     init_db()
     ensure_prompts_seeded()
+    # 历史遗留的占位标题会话（“新的对话”等）按最早一条用户消息自动命名（幂等）
+    try:
+        with crud.get_db() as db:
+            renamed = crud.rename_unnamed_sessions(db)
+        if renamed:
+            print(f"[startup] 已为 {renamed} 个未命名会话自动生成标题")
+    except Exception as e:
+        print(f"[startup][WARN] 自动命名未执行（不影响启动）: {e}")
     print("=" * 50)
     print("青少年心理RAG系统已启动")
     print(f"模型: {settings.CHAT_MODEL}")

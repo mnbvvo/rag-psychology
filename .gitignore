@@ -16,6 +16,4 @@ __pycache__/
 system_prompt.json
 
 # 运行时生成的数据目录（统一收口在 data/）
-# 含 SQLite 关系库（rag_psychology.sqlite3）与 Chroma 向量库（data/chroma/）
-# 二者均为本地状态，禁止提交；备份请用 data/ 整体拷贝
 data/

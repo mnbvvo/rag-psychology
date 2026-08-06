@@ -215,12 +215,12 @@ function renderPromptManager() {
           </div>
           <aside class="preview-panel">
             <div class="preview-card">
-              <header>实时渲染预览</header>
+              <header>组合后提示词预览</header>
               <div class="preview-content" id="preview-box">${prompt.content ? escapeHtml(renderPreview(prompt.content)) : '<span class="placeholder">在左侧编辑器输入内容以查看预览</span>'}</div>
             </div>
             <div class="preview-info">
               <strong>提示</strong><br/>
-              激活的提示词会被 RAG 问答默认使用。在「对话联调」和「提示词对比」中也可以临时切换其他提示词。
+              这里展示系统提示词与参考资料占位符拼接后的最终效果，即实际发送给模型的内容。激活的提示词会被 RAG 问答默认使用。
             </div>
           </aside>
         </div>
@@ -233,40 +233,26 @@ function renderPromptManager() {
 function renderPromptItem(p, activeId) {
   const isActive = p.id === activeId;
   return `
-    <button class="prompt-item ${p.id === state.selectedPromptId ? "active" : ""}" data-prompt-id="${p.id}">
-      <span class="item-dot"></span>
-      <span class="item-main">
-        <div class="item-name" id="prompt-name-${p.id}">${escapeHtml(p.name)}${isActive ? '<span class="badge-active">激活</span>' : ""}</div>
-        <div class="item-meta">${p.content?.length || 0} 字 · ${isActive ? "RAG 默认" : "未激活"}</div>
-      </span>
-      <span class="item-actions">
-        <button class="rename" data-rename="${p.id}" title="重命名">✎</button>
-        <button class="delete" data-delete="${p.id}" title="删除">×</button>
-      </span>
-    </button>`;
+    <div class="prompt-item ${p.id === state.selectedPromptId ? "active" : ""}">
+      <button class="prompt-item-main" data-prompt-id="${p.id}">
+        <span class="item-dot"></span>
+        <span class="item-main">
+          <div class="item-name" id="prompt-name-${p.id}">${escapeHtml(p.name)}${isActive ? '<span class="badge-active">激活</span>' : ""}</div>
+          <div class="item-meta">${p.content?.length || 0} 字 · ${isActive ? "RAG 默认" : "未激活"}</div>
+        </span>
+      </button>
+      <button class="item-delete" data-delete="${p.id}" title="删除">×</button>
+    </div>`;
 }
 
 function bindPromptManagerEvents(prompt) {
   const page = document.querySelector("#page-prompt");
 
   page.querySelectorAll("[data-prompt-id]").forEach((b) => {
-    b.addEventListener("click", (e) => {
-      if (e.target.dataset.rename || e.target.dataset.delete) return;
+    b.addEventListener("click", () => {
       state.selectedPromptId = b.dataset.promptId;
       saveState();
       renderPromptManager();
-    });
-  });
-
-  page.querySelectorAll("[data-rename]").forEach((b) => {
-    b.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      const p = getPromptById(b.dataset.rename);
-      const name = prompt("重命名提示词", p.name);
-      if (name === null) return;
-      const trimmed = name.trim();
-      if (!trimmed) return showToast("名称不能为空", "error");
-      await updatePrompt({ update: { id: p.id, name: trimmed } });
     });
   });
 
@@ -387,7 +373,7 @@ function renderChat() {
 
   const session = currentSession();
   const messages = session.messages || [];
-  const chatPrompt = getPromptById(state.chatPromptId);
+  const chatPrompt = state.chatPromptId ? getPromptById(state.chatPromptId) : activePrompt();
   // 保留输入框中尚未发送的内容，避免异步回答返回时整页重渲染将其清空
   const prevInput = page.querySelector("#chat-input");
   const draft = prevInput ? prevInput.value : "";
@@ -489,15 +475,18 @@ function renderMessage(m) {
 async function sendChat(content) {
   const session = currentSession();
   session.messages.push({ role: "user", content });
-  session.name = session.messages.length === 1 ? content.slice(0, 22) : session.name;
+  // 首次提问：立即用问题自动命名（清洗空白 + 限长），并在请求中带给后端持久化
+  const isFirstTurn = session.messages.length === 1;
+  if (isFirstTurn) session.name = content.replace(/\s+/g, " ").slice(0, 30);
   saveState(); renderChat();
   const btn = document.querySelector("#send-btn");
-  btn.disabled = true; btn.textContent = "…";
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>'; }
   try {
     // 多轮记忆：把当前会话的全部历史作为 messages 一起发给后端（不止当前一问）
     const history = session.messages.map((m) => ({ role: m.role, content: m.content }));
     const body = { messages: history, session_id: session.id };
     if (state.chatPromptId) body.prompt_id = state.chatPromptId;
+    if (isFirstTurn) body.title = session.name;
     const started = performance.now();
     const data = await api("POST", "/api/query", body);
     const elapsed = Math.round(performance.now() - started);
@@ -543,7 +532,15 @@ async function loadSessionMessages(id) {
     const roleMap = { human: "user", ai: "assistant" };
     const mapped = (Array.isArray(msgs) ? msgs : []).map((m) => ({ role: roleMap[m.role] || m.role, content: m.content }));
     const sess = state.sessions.find((s) => s.id === id);
-    if (sess) { sess.messages = mapped; sess.loaded = true; }
+    if (sess) {
+      sess.messages = mapped;
+      sess.loaded = true;
+      // 未命名会话：用最早一条用户消息自动取名（与后端命名规则一致，打开旧会话即时可见）
+      if (!sess.name || sess.name === "新会话" || sess.name === "新的对话") {
+        const firstUser = mapped.find((m) => m.role === "user");
+        if (firstUser) sess.name = firstUser.content.replace(/\s+/g, " ").slice(0, 30);
+      }
+    }
   } catch { /* 忽略：保持空消息，不阻断界面 */ }
 }
 
@@ -625,7 +622,7 @@ function renderCompare() {
           <button class="primary-btn" id="run-compare">运行对比</button>
         </div>
         <div class="history-section">
-          <div class="history-heading"><strong>对比历史</strong><span class="muted-label">点击恢复</span></div>
+          <div class="history-heading"><strong>对比历史</strong></div>
           <div class="history-list" id="compare-history">
             ${state.compareHistory.length ? renderCompareHistory() : '<div class="empty-small">还没有对比记录。</div>'}
           </div>
@@ -654,7 +651,7 @@ function renderCompare() {
 
   // 保持按钮禁用态 + 恢复上次/当前对比结果
   const runBtn = page.querySelector("#run-compare");
-  if (runBtn && comparing) { runBtn.disabled = true; runBtn.textContent = "生成中…"; }
+  if (runBtn && comparing) { runBtn.disabled = true; runBtn.innerHTML = '<span class="spinner"></span> 生成中…'; }
   if (state.currentCompare && state.currentCompare.input === state.compareInput) {
     ["a", "b"].forEach((side) => {
       const result = state.currentCompare[side];
@@ -690,8 +687,8 @@ function renderCompareHistory() {
         <span class="history-time">${new Date(r.createdAt).toLocaleString("zh-CN")}</span>
         <span class="history-input">${escapeHtml(r.input)}</span>
         <span class="history-models">A/B 对比</span>
+        <span class="history-del" data-del-history="${r.id}" title="删除记录">×</span>
       </button>
-      <span class="history-del" data-del-history="${r.id}" title="删除记录">×</span>
     </div>`).join("");
 }
 
@@ -701,31 +698,16 @@ function bindCompareHistory() {
 }
 
 async function deleteCompareRecord(id) {
-  const delBtn = document.querySelector(`[data-del-history="${id}"]`);
-  const row = delBtn ? delBtn.closest(".history-row") : null;
-  // 立即播放退出动画，给出视觉反馈（即便接口稍慢也不阻塞）
-  if (row) row.classList.add("removing");
+  const r = state.compareHistory.find((x) => String(x.id) === String(id));
+  if (!r) return;
+  if (!confirm("确定删除这条对比记录吗？")) return;
   try {
     await api("DELETE", `/api/compare-history/${encodeURIComponent(id)}`);
-    state.compareHistory = state.compareHistory.filter((r) => String(r.id) !== String(id));
-    // 动画结束后只移除这一行 DOM，而非整列表重建（避免其余条目闪动）
-    const finish = () => {
-      if (!row || !row.parentNode) return;
-      row.remove();
-      if (!state.compareHistory.length) {
-        const hist = document.querySelector("#compare-history");
-        if (hist) hist.innerHTML = '<div class="empty-small">还没有对比记录。</div>';
-      }
-    };
-    if (row) {
-      row.addEventListener("animationend", finish, { once: true });
-      setTimeout(finish, 360); // 兜底：动画事件未触发时强制移除
-    } else {
-      finish();
-    }
+    state.compareHistory = state.compareHistory.filter((x) => String(x.id) !== String(id));
+    saveState();
+    renderCompare();
     showToast("已删除对比记录", "success");
   } catch (e) {
-    if (row) row.classList.remove("removing"); // 失败则复原该行
     showToast(`删除失败：${e.message}`, "error");
   }
 }
@@ -752,9 +734,9 @@ function loadCompareRecord(id) {
 
 function setCompareCardLoading(side) {
   const el = document.querySelector(`#answer-${side}`);
-  if (el) { el.className = "answer placeholder"; el.textContent = "正在生成…"; }
+  if (el) { el.className = "answer placeholder"; el.innerHTML = '<div class="thinking"><span></span><span></span><span></span></div>'; }
   const meta = document.querySelector(`#meta-${side}`);
-  if (meta) meta.textContent = "运行中";
+  if (meta) meta.textContent = "运行中…";
 }
 
 function fillCompareCard(side, block) {
@@ -793,7 +775,7 @@ async function runCompare() {
 
   comparing = true;
   const btn = document.querySelector("#run-compare");
-  if (btn) { btn.disabled = true; btn.textContent = "生成中…"; }
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> 生成中…'; }
   state.currentCompare = { input, a: null, b: null };
   saveState();
   ["a", "b"].forEach(setCompareCardLoading);

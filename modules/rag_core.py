@@ -141,7 +141,6 @@ class PsychologyRAG:
         low_relevance = not context
 
         # 构建系统提示词（base + 年龄段片段 + 参考资料），
-        # 提示词内容来自 config/system_prompt.json，可由前端实时修改并同步。
         system_prompt = build_system_prompt(
             age_group=age_group,
             context_text=context_text,
