@@ -1303,6 +1303,53 @@ button, input, textarea, select {
   }
 }
 
+/* ---------------- 自定义确认弹窗 ---------------- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(26, 26, 46, 0.4);
+  display: grid;
+  place-items: center;
+  z-index: 300;
+  animation: fadeIn 0.15s ease;
+}
+
+.modal-card {
+  width: min(380px, calc(100vw - 48px));
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: 22px 24px;
+  animation: modalIn 0.18s ease;
+}
+
+@keyframes modalIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+.modal-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+
+.modal-message {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  margin-bottom: 20px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 /* ---------------- Toast ---------------- */
 .toast {
   position: fixed;
@@ -1413,6 +1460,19 @@ button, input, textarea, select {
     border-right: none;
     border-bottom: 1px solid var(--border);
   }
+}
+
+/* 触觉反馈：按压轻缩，提升点按手感（鼠标/触屏通用） */
+.primary-btn:active,
+.ghost-btn:active,
+.danger-btn:active,
+.send-btn:active,
+.nav-btn:active,
+.suggestion:active,
+.prompt-item-main:active,
+.session:active,
+.history-item:active {
+  transform: scale(0.97);
 }
 
 /* ============================================================

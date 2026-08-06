@@ -47,6 +47,40 @@ function showToast(message, type = "info") {
   toastTimer = setTimeout(() => (root.className = "toast hidden"), 3200);
 }
 
+// 自定义确认弹窗（替代原生 confirm，样式与项目统一）。
+// 返回 Promise<boolean>：点击「确认」或按 Enter 为 true；「取消」/遮罩点击/Esc 为 false。
+function confirmDialog({ title = "确认操作", message = "", confirmText = "确认", danger = false }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.innerHTML = `
+      <div class="modal-card" role="alertdialog" aria-modal="true" aria-label="${escapeHtml(title)}">
+        <div class="modal-title">${escapeHtml(title)}</div>
+        <div class="modal-message">${escapeHtml(message)}</div>
+        <div class="modal-actions">
+          <button class="ghost-btn modal-cancel" type="button">取消</button>
+          <button class="${danger ? "danger-btn" : "primary-btn"} modal-ok" type="button">${escapeHtml(confirmText)}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    const close = (result) => {
+      overlay.remove();
+      document.removeEventListener("keydown", onKey, true);
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); close(false); }
+      else if (e.key === "Enter") { e.preventDefault(); close(true); }
+    };
+    overlay.querySelector(".modal-cancel").addEventListener("click", () => close(false));
+    overlay.querySelector(".modal-ok").addEventListener("click", () => close(true));
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(false); });
+    document.addEventListener("keydown", onKey, true);
+    overlay.querySelector(".modal-ok").focus();
+  });
+}
+
 function currentSession() {
   return state.sessions.find((s) => s.id === state.activeSessionId) || state.sessions[0];
 }
@@ -289,7 +323,8 @@ function bindPromptListEvents(page) {
       e.stopPropagation();
       const p = getPromptById(b.dataset.delete);
       if (state.prompts.length <= 1) return showToast("至少保留一条提示词", "error");
-      if (!confirm(`确定删除提示词「${p.name}」吗？`)) return;
+      const ok = await confirmDialog({ title: "删除提示词", message: `确定删除提示词「${p.name}」吗？删除后不可恢复。`, confirmText: "删除", danger: true });
+      if (!ok) return;
       await updatePrompt({ deleteId: p.id });
     });
   });
@@ -452,8 +487,8 @@ function renderChat() {
           <button class="ghost-btn" id="rename-session">重命名</button>
           <button class="ghost-btn" id="export-session">导出</button>
         </div>
-        <div class="message-list" id="message-list">${messages.length ? messages.map(renderMessage).join("") : renderWelcome()}</div>
-        <form class="composer" id="chat-form"><textarea id="chat-input" rows="1" placeholder="输入问题，按 Enter 发送，Shift + Enter 换行"></textarea><button class="send-btn" id="send-btn" type="submit" title="发送">↑</button></form>
+        <div class="message-list" id="message-list" aria-live="polite">${messages.length ? messages.map(renderMessage).join("") : renderWelcome()}</div>
+        <form class="composer" id="chat-form"><textarea id="chat-input" rows="1" placeholder="输入问题，按 Enter 发送，Shift + Enter 换行"></textarea><button class="send-btn" id="send-btn" type="submit" title="发送" aria-label="发送">↑</button></form>
       </section>
       <aside class="inspector">
         <div class="section-title"><span>本次对话配置</span></div>
@@ -473,16 +508,35 @@ function renderChat() {
     </div>`;
 
   const restoredInput = page.querySelector("#chat-input");
-  if (restoredInput && draft) restoredInput.value = draft;
+  if (restoredInput && draft) {
+    restoredInput.value = draft;
+    // 恢复草稿时同步自动增高，避免高度与内容不匹配
+    restoredInput.style.height = "auto";
+    restoredInput.style.height = `${Math.min(restoredInput.scrollHeight, 160)}px`;
+  }
 
   page.querySelectorAll("[data-session]").forEach((b) => b.addEventListener("click", (e) => { if (e.target.dataset.deleteSession) return; selectSession(b.dataset.session); }));
-  page.querySelectorAll("[data-delete-session]").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); deleteSession(b.dataset.deleteSession); }));
+  // 删除会话：鼠标点击 + 键盘（Enter/Space）均可达（删除按钮为 span，需 role=button + tabindex）
+  const handleSessionDeleteKey = (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); deleteSession(e.currentTarget.dataset.deleteSession); }
+  };
+  page.querySelectorAll("[data-delete-session]").forEach((b) => {
+    b.addEventListener("click", (e) => { e.stopPropagation(); deleteSession(b.dataset.deleteSession); });
+    b.addEventListener("keydown", handleSessionDeleteKey);
+  });
   page.querySelector("#new-session").addEventListener("click", () => createSession());
   page.querySelector("#rename-session").addEventListener("click", () => { const name = prompt("输入新的对话名称", session.name); if (name?.trim()) renameSession(session.id, name.trim()); });
   page.querySelector("#export-session").addEventListener("click", exportSession);
   const form = page.querySelector("#chat-form");
-  form.addEventListener("submit", async (e) => { e.preventDefault(); const input = page.querySelector("#chat-input"); const content = input.value.trim(); if (!content) return; input.value = ""; input.style.height = "auto"; await sendChat(content); });
-  page.querySelector("#chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); page.querySelector("#chat-form").requestSubmit(); } });
+  const chatInput = page.querySelector("#chat-input");
+  // 输入自动增高（上限与 CSS max-height 160px 一致），发送后由 submit 重置高度
+  const autoGrow = () => {
+    chatInput.style.height = "auto";
+    chatInput.style.height = `${Math.min(chatInput.scrollHeight, 160)}px`;
+  };
+  chatInput.addEventListener("input", autoGrow);
+  form.addEventListener("submit", async (e) => { e.preventDefault(); const content = chatInput.value.trim(); if (!content) return; chatInput.value = ""; chatInput.style.height = "auto"; await sendChat(content); });
+  chatInput.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
   // 切换提示词：只局部更新下拉预览与来源文字，不整页重建（避免消息列表滚到底、页面抖动）
   page.querySelector("#chat-prompt-select").addEventListener("change", (e) => {
     state.chatPromptId = e.target.value;
@@ -512,7 +566,7 @@ function renderSessionItem(s, activeId) {
     <button class="session ${s.id === activeId ? "active" : ""}" data-session="${s.id}">
       <span>◌</span>
       <span class="session-copy"><span class="session-name">${escapeHtml(s.name)}</span><span class="session-time">${new Date(s.createdAt).toLocaleDateString("zh-CN")}</span></span>
-      <span class="session-delete" data-delete-session="${s.id}">×</span>
+      <span class="session-delete" data-delete-session="${s.id}" tabindex="0" role="button" aria-label="删除会话 ${escapeHtml(s.name)}">×</span>
     </button>`;
 }
 
@@ -567,6 +621,9 @@ async function sendChat(content) {
     showToast(e.message, "error");
   }
   saveState(); renderChat();
+  // 发送后自动聚焦输入框，便于连续追问（移动端软键盘体验关键）
+  const chatInputNow = document.querySelector("#chat-input");
+  if (chatInputNow) chatInputNow.focus();
 }
 
 function exportSession() {
@@ -659,6 +716,11 @@ async function renameSession(id, name) {
 }
 
 async function deleteSession(id) {
+  const sess = state.sessions.find((s) => s.id === id);
+  if (!sess) return;
+  // 与提示词管理/对比历史一致的自定义确认弹窗，避免误触即删
+  const ok = await confirmDialog({ title: "删除对话", message: `确定删除对话「${sess.name}」吗？删除后不可恢复。`, confirmText: "删除", danger: true });
+  if (!ok) return;
   try {
     await api("DELETE", `/api/sessions/${encodeURIComponent(id)}`);
     state.sessions = state.sessions.filter((s) => s.id !== id);
@@ -758,20 +820,27 @@ function renderCompareHistory() {
         <span class="history-time">${new Date(r.createdAt).toLocaleString("zh-CN")}</span>
         <span class="history-input">${escapeHtml(r.input)}</span>
         <span class="history-models">A/B 对比</span>
-        <span class="history-del" data-del-history="${r.id}" title="删除记录">×</span>
+        <span class="history-del" data-del-history="${r.id}" tabindex="0" role="button" title="删除记录" aria-label="删除记录">×</span>
       </button>
     </div>`).join("");
 }
 
 function bindCompareHistory() {
   document.querySelectorAll("[data-history-id]").forEach((b) => b.addEventListener("click", () => loadCompareRecord(b.dataset.historyId)));
-  document.querySelectorAll("[data-del-history]").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); deleteCompareRecord(b.dataset.delHistory); }));
+  // 删除记录：鼠标点击 + 键盘（Enter/Space）均可达（按钮为 span，需 role=button + tabindex）
+  document.querySelectorAll("[data-del-history]").forEach((b) => {
+    b.addEventListener("click", (e) => { e.stopPropagation(); deleteCompareRecord(b.dataset.delHistory); });
+    b.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); deleteCompareRecord(b.dataset.delHistory); }
+    });
+  });
 }
 
 async function deleteCompareRecord(id) {
   const r = state.compareHistory.find((x) => String(x.id) === String(id));
   if (!r) return;
-  if (!confirm("确定删除这条对比记录吗？")) return;
+  const ok = await confirmDialog({ title: "删除记录", message: "确定删除这条对比记录吗？删除后不可恢复。", confirmText: "删除", danger: true });
+  if (!ok) return;
   try {
     await api("DELETE", `/api/compare-history/${encodeURIComponent(id)}`);
     state.compareHistory = state.compareHistory.filter((x) => String(x.id) !== String(id));
