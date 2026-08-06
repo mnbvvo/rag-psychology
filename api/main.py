@@ -449,12 +449,28 @@ async def startup_event():
             print(f"[startup] 已为 {renamed} 个未命名会话自动生成标题")
     except Exception as e:
         print(f"[startup][WARN] 自动命名未执行（不影响启动）: {e}")
+    # 预热本地重排模型：后台线程加载（约 5-10 秒），不阻塞启动；
+    # 预热失败静默（问答时自动回退到原排序），保证首次问答不卡顿
+    if settings.RERANK_ENABLED:
+        import threading
+
+        def _warm_reranker():
+            try:
+                from modules.reranker import get_reranker
+
+                get_reranker()._load()
+                print("[startup] 本地重排模型已加载（bge-reranker-v2-m3）")
+            except Exception as e:
+                print(f"[startup][WARN] 重排模型预热失败，问答时将回退原排序: {e}")
+
+        threading.Thread(target=_warm_reranker, daemon=True).start()
     print("=" * 50)
     print("青少年心理RAG系统已启动")
     print(f"模型: {settings.CHAT_MODEL}")
     print(f"向量数据库: Chroma")
     print(f"关系数据库: {settings.DB_URL}")
     print(f"安全检查: {'启用' if settings.SAFETY_CHECK_ENABLED else '禁用'}")
+    print(f"本地重排: {'启用（' + settings.RERANK_MODEL + '）' if settings.RERANK_ENABLED else '禁用'}")
     print("=" * 50)
 
 

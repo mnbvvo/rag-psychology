@@ -55,6 +55,19 @@ class Settings:
     MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.2"))  # 相关性下限，0=不启用（建议 0.2~0.35）
     AGE_GROUPS = ["child", "early_teen", "teen", "late_teen"]  # 年龄分桶（检索过滤 + 回答语气适配）
 
+    # 本地重排序（Cross-Encoder，bge-reranker-v2-m3）
+    # 召回候选后按「问题 × 文档」逐对打分精排，替代仅按向量分数截断的假重排。
+    # 模型失败/异常时自动回退到原排序逻辑，不影响检索可用性。
+    RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"  # 是否启用本地重排
+    RERANK_MODEL = os.getenv(
+        "RERANK_MODEL",
+        _resolve_path("data/rerank_models/bge-reranker-v2-m3", _PROJECT_ROOT),
+    )  # 本地模型目录（含 config.json/model.safetensors），也支持 HF 模型名
+    RERANK_DEVICE = os.getenv("RERANK_DEVICE", "")  # 留空=自动（优先 cuda），可显式 cuda/cpu
+    RERANK_BATCH_SIZE = int(os.getenv("RERANK_BATCH_SIZE", "8"))  # 每批重排文档数
+    RERANK_MAX_LENGTH = int(os.getenv("RERANK_MAX_LENGTH", "512"))  # 单条文本截断长度（token）
+    RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "0"))  # 重排分数下限（bge 分数 0~1；本项目实测相关文档约 0.4+、无关 <0.15，建议从 0.2~0.3 起试，勿设太高否则全部过滤）；0=不启用。低于阈值的候选被丢弃，全被丢弃时回答会提示"没有足够信息"防编造
+
     # 生成参数
     CHAT_TEMPERATURE = float(os.getenv("CHAT_TEMPERATURE", "0.3"))  # 生成温度，事实/建议类问答偏低以减少幻觉
 

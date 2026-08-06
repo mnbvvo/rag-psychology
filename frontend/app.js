@@ -97,6 +97,7 @@ function renderTimings(timings, elapsed) {
     parts.push(`安全 ${formatMs(timings.safety)}`);
     parts.push(`嵌入 ${formatMs(timings.embed)}`);
     parts.push(`检索 ${formatMs(timings.retrieve)}`);
+    if (timings.rerank != null) parts.push(`重排 ${formatMs(timings.rerank)}`);
     parts.push(`生成 ${formatMs(timings.llm)}`);
     if (elapsed != null) {
       parts.push(`后端总 ${formatMs(timings.total)}`);

@@ -201,6 +201,25 @@ JSONL 每行一条记录：
 
 导入脚本把 `card_json` 字段拼成可读文本做向量化，结构化字段写入 metadata。
 
+## 本地重排序
+
+检索默认启用本地 Cross-Encoder 重排（`bge-reranker-v2-m3`）：召回候选后按「问题 × 文档」逐对打分精排取 top3，替代仅按向量分数截断的假重排。模型加载失败/异常时**自动回退**到原排序逻辑，不影响检索可用性。服务启动时后台预热模型（约 5-10 秒，不阻塞启动），首次问答不卡顿；前端耗时栏会显示「重排」耗时。
+
+模型下载（放到 `data/rerank_models/bge-reranker-v2-m3`，该目录已被 `.gitignore` 忽略）：
+
+```powershell
+# 方式一：ModelScope（国内速度快）
+pip install -U modelscope
+modelscope download --model BAAI/bge-reranker-v2-m3 --local_dir "data/rerank_models/bge-reranker-v2-m3"
+
+# 方式二：HuggingFace 镜像
+pip install -U huggingface_hub
+set HF_ENDPOINT=https://hf-mirror.com
+huggingface-cli download BAAI/bge-reranker-v2-m3 --local-dir "data/rerank_models/bge-reranker-v2-m3"
+```
+
+依赖：`sentence-transformers` + torch（有 NVIDIA GPU 建议装 CUDA 版：`pip install torch --index-url https://download.pytorch.org/whl/cu124`，重排从秒级降到几十毫秒）。相关配置见 `.env.example`：`RERANK_ENABLED` / `RERANK_MODEL` / `RERANK_DEVICE` / `RERANK_BATCH_SIZE` / `RERANK_MAX_LENGTH` / `RERANK_MIN_SCORE`（可选最低分数护栏，默认 0=不启用；bge 分数 0~1，本项目实测相关约 0.4+、无关 <0.15，建议 0.2~0.3 起试；低于阈值的候选被丢弃，全部丢弃时回答会提示"没有足够信息"防编造）。
+
 ## 本地向量库
 
 - 向量由 `EMBEDDING_MODEL` 生成，文档来自 JSONL 结构化卡片（一卡一文档），持久化在 `data/chroma/`（统一收在 data/ 下），重启后仍可用。

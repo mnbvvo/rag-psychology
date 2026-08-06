@@ -43,41 +43,71 @@ class PsychologyRAG:
         age_group: str = "teen",
         timings: Optional[Dict] = None,
     ) -> List[Document]:
-        """检索相关文档：多召回 -> 阈值 -> 重排序截断。"""
+        """检索相关文档：多召回 -> （可选重排）-> 截断。
+
+        启用本地重排（RERANK_ENABLED）时：召回候选集 → Cross-Encoder 精排取 top3；
+        重排失败自动回退到「按向量分数排序截断」的原逻辑，保证可用性。
+        """
         from modules.vector_store import get_last_embed_ms
 
         filter_dict = self._build_age_filter(age_group)
+        rerank_enabled = settings.RERANK_ENABLED
 
         t0 = time.perf_counter()
         if settings.SEARCH_TYPE == "mmr":
-            # 最大边际相关：在相关性基础上提升多样性
+            # 重排开启时用 MMR 产出更多候选（多样性），交给重排精排；否则保持原 top_k 行为
+            mmr_k = settings.FETCH_K if rerank_enabled else settings.RERANK_TOP_K
             docs = self.vectorstore.max_marginal_relevance_search(
                 question,
-                k=settings.RERANK_TOP_K,
+                k=mmr_k,
                 fetch_k=settings.FETCH_K * 2,
                 lambda_mult=settings.MMR_LAMBDA,
                 filter_dict=filter_dict,
             )
+            scored = None
         else:
-            # 带分数的语义检索，便于阈值过滤与重排序
+            # 带分数的语义检索，便于阈值过滤与回退排序
             scored = self.vectorstore.similarity_search_with_relevance_scores(
                 question, k=settings.FETCH_K, filter_dict=filter_dict
             )
-            if settings.MIN_RELEVANCE_SCORE > 0:
-                scored = [
-                    (doc, score)
-                    for doc, score in scored
-                    if score >= settings.MIN_RELEVANCE_SCORE
-                ]
-            # 按相关性降序重排，仅取最相关的 RERANK_TOP_K 条喂给模型
-            scored.sort(key=lambda item: item[1], reverse=True)
-            top = scored[: settings.RERANK_TOP_K]
-            docs = [doc for doc, _ in top]
+            if rerank_enabled:
+                # 重排前不做硬阈值过滤（避免误杀），把全部候选交给重排器精排
+                docs = [doc for doc, _ in scored]
+            else:
+                if settings.MIN_RELEVANCE_SCORE > 0:
+                    scored = [
+                        (doc, score)
+                        for doc, score in scored
+                        if score >= settings.MIN_RELEVANCE_SCORE
+                    ]
+                # 按相关性降序重排，仅取最相关的 RERANK_TOP_K 条喂给模型
+                scored.sort(key=lambda item: item[1], reverse=True)
+                top = scored[: settings.RERANK_TOP_K]
+                docs = [doc for doc, _ in top]
 
-        # 拆分 embed 与 retrieve：检索总耗时 - embedding 耗时
+        # 本地重排：对候选按「问题 × 文档」逐对打分，取 top_k
+        if rerank_enabled and docs:
+            try:
+                from modules.reranker import rerank_documents
+
+                t_r = time.perf_counter()
+                docs = rerank_documents(question, docs, top_k=settings.RERANK_TOP_K)
+                if timings is not None:
+                    timings["rerank"] = (time.perf_counter() - t_r) * 1000
+            except Exception as e:
+                # 回退：similarity 按原始分数截断；mmr 直接取前 k 条
+                print(f"[rerank][WARN] 重排失败，回退到原排序: {e}", flush=True)
+                if scored:
+                    scored.sort(key=lambda item: item[1], reverse=True)
+                    docs = [doc for doc, _ in scored[: settings.RERANK_TOP_K]]
+                else:
+                    docs = docs[: settings.RERANK_TOP_K]
+
+        # 拆分 embed / retrieve / rerank：检索总耗时 - embedding - 重排
         search_total_ms = (time.perf_counter() - t0) * 1000
         embed_ms = get_last_embed_ms()
-        retrieve_ms = max(0.0, search_total_ms - embed_ms)
+        rerank_ms = (timings.get("rerank", 0) if timings else 0) or 0
+        retrieve_ms = max(0.0, search_total_ms - embed_ms - rerank_ms)
         if timings is not None:
             timings["embed"] = embed_ms
             timings["retrieve"] = retrieve_ms
