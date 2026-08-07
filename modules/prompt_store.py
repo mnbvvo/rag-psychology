@@ -253,6 +253,10 @@ def update_prompt_config(partial: Dict) -> Dict:
                 if p:
                     was_active = p.is_active
                     db.delete(p)
+                    # SessionLocal 是 autoflush=False：必须先 flush，否则随后的
+                    # list_prompts 查询可能仍返回已标记删除的行（尤其删除的是列表
+                    # 第一条时，nxt[0] 会拿到已删对象，设置 is_active 无效）
+                    db.flush()
                     if pid in by_id:
                         del by_id[pid]
                     if was_active:
@@ -332,7 +336,12 @@ def build_system_prompt(
     else:
         base = get_active_prompt()["content"]
 
-    ref = "参考资料:\n" + (context_text or "{context}")
+    # 有参考资料时正常拼接；检索为空时**不要**输出 {context} 字面占位——
+    # 它会触发 ChatPromptTemplate 的模板变量解析（缺 context 变量报 KeyError），
+    # 且对 LLM 也无意义，由 LOW_RELEVANCE_NOTE 负责向模型说明"无参考资料"。
+    ref = f"参考资料:\n{context_text}" if context_text else ""
     if low_relevance:
-        ref = LOW_RELEVANCE_NOTE + "\n\n" + ref
-    return (base + "\n\n" + ref) if base else ref
+        ref = (LOW_RELEVANCE_NOTE + "\n\n" + ref).rstrip() if ref else LOW_RELEVANCE_NOTE
+    if base and ref:
+        return base + "\n\n" + ref
+    return base or ref

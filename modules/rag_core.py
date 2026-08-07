@@ -13,6 +13,20 @@ from modules.prompt_store import build_system_prompt
 from config.settings import settings
 
 
+def build_sources(context: List[Document]) -> List[Dict]:
+    """从检索文档构建来源信息（供 generate 结果与 SSE sources 事件复用）。"""
+    sources = []
+    for i, doc in enumerate(context):
+        sources.append({
+            "index": i + 1,
+            "card_id": doc.metadata.get("card_id"),
+            "title": doc.metadata.get("title", "未知"),
+            "source_id": doc.metadata.get("source_id"),
+            "risk_level": doc.metadata.get("risk_level"),
+        })
+    return sources
+
+
 class PsychologyRAG:
     """青少年心理RAG系统"""
 
@@ -148,7 +162,7 @@ class PsychologyRAG:
 
         try:
             conversation_text = "\n\n".join([
-                f"{'用户' if m['role'] == 'human' else '助手'}：{m['content']}"
+                f"{'用户' if m['role'] in ('human', 'user') else '助手'}：{m['content']}"
                 for m in older
             ])
             summary_prompt = ChatPromptTemplate.from_messages([
@@ -163,6 +177,47 @@ class PsychologyRAG:
             pass
 
         return recent
+
+    def _build_messages(
+        self,
+        question: str,
+        context: List[Document],
+        age_group: str = "teen",
+        system_prompt_override: Optional[str] = None,
+        prompt_id: Optional[str] = None,
+        messages: Optional[List[Dict]] = None,
+    ) -> List:
+        """组装直接传给 LLM 的消息列表（generate 与 stream_generate 共用）。
+
+        直接返回消息元组列表交给 llm.invoke/astream，**绕过 ChatPromptTemplate
+        的 {var} 模板变量解析**：即使提示词/空上下文里出现 {context} 字面量，
+        也不会被当成模板变量报 KeyError（参考此前 RERANK_MIN_SCORE 过滤导致
+        检索为空时 {context} 占位触发 MissingInput 的 bug）。
+        """
+        context_text = "\n\n".join(
+            [f"[{i+1}] {doc.page_content}" for i, doc in enumerate(context)]
+        )
+        # 低相关提示：检索结果偏弱时，要求模型如实说明而非编造
+        system_prompt = build_system_prompt(
+            age_group=age_group,
+            context_text=context_text,
+            low_relevance=not context,
+            system_prompt_override=system_prompt_override,
+            prompt_id=prompt_id,
+        )
+
+        if messages:
+            compressed = self.compress_messages(messages)
+            prompt_messages = [("system", system_prompt)]
+            for m in compressed:
+                role = m.get("role", "")
+                # 兼容 human/ai 与 user/assistant 两种角色命名，避免历史被静默丢弃
+                if role in ("human", "user"):
+                    prompt_messages.append(("human", m["content"]))
+                elif role in ("ai", "assistant"):
+                    prompt_messages.append(("ai", m["content"]))
+            return prompt_messages
+        return [("system", system_prompt), ("human", question)]
 
     def generate(
         self,
@@ -181,65 +236,42 @@ class PsychologyRAG:
         prompt_id：指定使用提示词库中的某条提示词（与 override 互斥，override 优先）。
         messages：多轮对话历史；提供时会把完整历史拼入 prompt，question 仅用于检索与日志。
         """
-        # 构建上下文文本
-        context_text = "\n\n".join(
-            [f"[{i+1}] {doc.page_content}" for i, doc in enumerate(context)]
+        prompt_messages = self._build_messages(
+            question, context, age_group, system_prompt_override, prompt_id, messages
         )
-
-        # 低相关提示：检索结果偏弱时，要求模型如实说明而非编造
-        low_relevance = not context
-
-        # 构建系统提示词（base + 年龄段片段 + 参考资料），
-        system_prompt = build_system_prompt(
-            age_group=age_group,
-            context_text=context_text,
-            low_relevance=low_relevance,
-            system_prompt_override=system_prompt_override,
-            prompt_id=prompt_id,
-        )
-
-        # 多轮模式：system + 压缩后的历史消息（最后一条为当前问题）
-        if messages:
-            compressed = self.compress_messages(messages)
-            prompt_messages = [("system", system_prompt)]
-            for m in compressed:
-                if m["role"] == "human":
-                    prompt_messages.append(("human", m["content"]))
-                elif m["role"] == "ai":
-                    prompt_messages.append(("ai", m["content"]))
-            rag_prompt = ChatPromptTemplate.from_messages(prompt_messages)
-            chain = rag_prompt | self.llm | StrOutputParser()
-            invoke_input = {}
-        else:
-            # 单轮模式：system + 当前问题
-            rag_prompt = ChatPromptTemplate.from_messages([
-                ("system", system_prompt),
-                ("human", "{question}"),
-            ])
-            chain = rag_prompt | self.llm | StrOutputParser()
-            invoke_input = {"question": question}
 
         # 生成回答（LLM 调用是主要耗时来源，单独计时）
         t0 = time.perf_counter()
-        answer = chain.invoke(invoke_input)
+        msg = self.llm.invoke(prompt_messages)
+        answer = msg.content if hasattr(msg, "content") else str(msg)
         if timings is not None:
             timings["llm"] = (time.perf_counter() - t0) * 1000
 
-        # 构建来源信息
-        sources = []
-        for i, doc in enumerate(context):
-            sources.append({
-                "index": i + 1,
-                "card_id": doc.metadata.get("card_id"),
-                "title": doc.metadata.get("title", "未知"),
-                "source_id": doc.metadata.get("source_id"),
-                "risk_level": doc.metadata.get("risk_level"),
-            })
-
         return {
             "answer": answer,
-            "sources": sources,
+            "sources": build_sources(context),
         }
+
+    async def stream_generate(
+        self,
+        question: str,
+        context: List[Document],
+        age_group: str = "teen",
+        system_prompt_override: Optional[str] = None,
+        prompt_id: Optional[str] = None,
+        messages: Optional[List[Dict]] = None,
+    ):
+        """流式生成：与 generate 相同的提示词组装，逐 token 产出文本块（async generator）。
+
+        供 /api/query/stream（SSE）使用：检索已由 prepare 完成，这里只做生成。
+        """
+        prompt_messages = self._build_messages(
+            question, context, age_group, system_prompt_override, prompt_id, messages
+        )
+        async for chunk in self.llm.astream(prompt_messages):
+            content = chunk.content if hasattr(chunk, "content") else str(chunk)
+            if content:
+                yield content
 
 
     def run(

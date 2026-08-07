@@ -5,7 +5,7 @@
 import time
 import threading
 from modules.vector_store import PsychologyVectorStore
-from modules.rag_core import PsychologyRAG
+from modules.rag_core import PsychologyRAG, build_sources
 from modules.safety_checker import SafetyChecker
 from config.settings import settings
 from typing import Dict, List, Optional, Union
@@ -46,21 +46,9 @@ class PsychologyRAGSystem:
         self.rag = PsychologyRAG(self.vectorstore)
         self.safety_checker = SafetyChecker()
 
-    def query(
-        self,
-        question: str = None,
-        age_group: str = None,
-        check_safety: bool = True,
-        system_prompt_override: Optional[str] = None,
-        prompt_id: Optional[str] = None,
-        messages: Optional[List[Dict]] = None,
-    ) -> Dict:
-        """查询系统
-
-        支持单轮 question 或多轮 messages。多轮模式下，从最后一条 human/user
-        消息提取当前问题用于检索与安全检测，完整历史传给 LLM 作为上下文。
-        """
-        # 统一归一化 messages，并提取当前问题
+    @staticmethod
+    def _normalize(messages, question):
+        """统一归一化 messages 并提取当前问题；返回 (norm_messages, current_question)。"""
         if messages:
             norm_messages = []
             for m in messages:
@@ -80,20 +68,37 @@ class PsychologyRAGSystem:
                     break
             if not current_question:
                 raise ValueError("messages 中未找到有效的用户问题")
-        elif question:
-            current_question = question
-            norm_messages = [{"role": "human", "content": question}]
-        else:
-            raise ValueError("必须提供 question 或 messages")
+            return norm_messages, current_question
+        if question:
+            return [{"role": "human", "content": question}], question
+        raise ValueError("必须提供 question 或 messages")
 
+    def prepare(
+        self,
+        question: str = None,
+        age_group: str = None,
+        check_safety: bool = True,
+        system_prompt_override: Optional[str] = None,
+        prompt_id: Optional[str] = None,
+        messages: Optional[List[Dict]] = None,
+    ) -> Dict:
+        """安全检测 + 检索（不含生成）。
+
+        供 SSE 端点复用：先同步完成 safety + 混合检索 + 重排，返回
+        context/sources/safety/timings；高危时 is_crisis_response=True 且
+        answer 为危机响应，此时不应再进入生成阶段。
+        """
+        norm_messages, current_question = self._normalize(messages, question)
         result = {
             "question": current_question,
             "age_group": age_group,
+            "context": [],
             "answer": "",
             "sources": [],
             "safety_check": None,
+            "is_crisis_response": False,
+            "norm_messages": norm_messages,
         }
-
         timings: Dict[str, float] = {}
         t0 = time.perf_counter()
 
@@ -103,8 +108,7 @@ class PsychologyRAGSystem:
             safety_result = self.safety_checker.check_and_respond(current_question)
             timings["safety"] = (time.perf_counter() - ts) * 1000
             result["safety_check"] = safety_result
-
-            # 如果是高危情况，优先返回安全提示
+            # 高危：直接返回危机响应，不走检索与生成
             if safety_result.get("is_crisis") and safety_result["level"] == "high":
                 result["answer"] = safety_result["safety_response"]["message"]
                 result["is_crisis_response"] = True
@@ -113,22 +117,50 @@ class PsychologyRAGSystem:
                 _log_query_timings(current_question, age_group, timings, 0)
                 return result
 
-        # 执行RAG查询
-        rag_result = self.rag.run(
-            current_question, age_group, system_prompt_override, prompt_id, timings=timings, messages=norm_messages
-        )
-        result["answer"] = rag_result["answer"]
-        result["sources"] = rag_result["sources"]
-        result["is_crisis_response"] = False
-
-        # 如果有中危信号，附加安全提示
+        # 检索：混合召回 + 重排
+        context = self.rag.retrieve(current_question, age_group, timings=timings)
+        result["context"] = context
+        result["sources"] = build_sources(context)
+        # 中/低危：附带关怀提示
         if check_safety and safety_result.get("is_crisis"):
             result["safety_note"] = safety_result["safety_response"]["message"]
-
-        timings["total"] = (time.perf_counter() - t0) * 1000
         result["timings"] = timings
-        _log_query_timings(current_question, age_group, timings, len(result["sources"]))
         return result
+
+    def query(
+        self,
+        question: str = None,
+        age_group: str = None,
+        check_safety: bool = True,
+        system_prompt_override: Optional[str] = None,
+        prompt_id: Optional[str] = None,
+        messages: Optional[List[Dict]] = None,
+    ) -> Dict:
+        """查询系统（同步完整流程：prepare + generate）。
+
+        支持单轮 question 或多轮 messages。多轮模式下，从最后一条 human/user
+        消息提取当前问题用于检索与安全检测，完整历史传给 LLM 作为上下文。
+        """
+        # 全流程墙钟：从 prepare（安全+检索+重排）到生成结束，与 SSE 端点 total 语义一致
+        t_query = time.perf_counter()
+        prep = self.prepare(question, age_group, check_safety, system_prompt_override, prompt_id, messages)
+        timings = prep.get("timings") or {}
+
+        # 高危：直接返回危机响应（prepare 内已记录全程 total）
+        if prep.get("is_crisis_response"):
+            return prep
+
+        # 生成
+        gen = self.rag.generate(
+            prep["question"], prep.get("context") or [], age_group,
+            system_prompt_override, prompt_id, timings=timings, messages=prep.get("norm_messages"),
+        )
+        prep["answer"] = gen["answer"]
+        prep["sources"] = gen["sources"]
+        timings["total"] = (time.perf_counter() - t_query) * 1000
+        prep["timings"] = timings
+        _log_query_timings(prep["question"], age_group, timings, len(prep["sources"]))
+        return prep
 
 # 创建全局实例
 rag_system = PsychologyRAGSystem()

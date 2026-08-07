@@ -75,9 +75,11 @@ def _docs_from_vectorstore() -> List:
 
     store = PsychologyVectorStore()
     data = store.vectorstore._collection.get(include=["documents", "metadatas"])
+    docs = data.get("documents") or []
+    metas = data.get("metadatas") or []
     return [
         Document(page_content=text or "", metadata=meta or {})
-        for text, meta in zip(data["documents"], data["metadatas"])
+        for text, meta in zip(docs, metas)
     ]
 
 

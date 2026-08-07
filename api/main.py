@@ -14,13 +14,14 @@ from collections import defaultdict, deque
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 from typing import List, Optional, Dict
 import json
 from modules import rag_system
+from modules.rag_core import build_sources
 from modules.prompt_store import (
     get_prompt_config,
     update_prompt_config,
@@ -50,13 +51,13 @@ app.add_middleware(
 )
 
 
-# 简单内存限流：仅针对 POST /api/query，防止单客户端刷接口
+# 简单内存限流：仅针对 POST /api/query 与 /api/query/stream，防止单客户端刷接口
 _rate_limit_store: dict[str, deque] = defaultdict(deque)
 
 
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
-    if request.url.path == "/api/query" and request.method == "POST":
+    if request.url.path in ("/api/query", "/api/query/stream") and request.method == "POST":
         client = request.client.host if request.client else "unknown"
         now = time.time()
         window = settings.RATE_LIMIT_SECONDS
@@ -225,6 +226,123 @@ async def query(request: QueryRequest):
     except Exception:
         # 不把内部异常细节（路径/堆栈）回传给客户端
         raise HTTPException(status_code=500, detail="内部处理失败，请稍后重试。")
+
+
+def _sse(event: str, data: dict) -> str:
+    """格式化一个 SSE 事件：`event:` + `data:` 两行 + 空行结尾。"""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@app.post("/api/query/stream")
+async def query_stream(stream_request: Request, request: QueryRequest):
+    """
+    SSE 流式问答（对话联调页使用）。
+
+    事件流：sources（来源 + 检索耗时）→ token×N（逐块文本）→ done（完整回答 +
+    safety_note + timings + session_id，已落库）；高危危机直接发 done；异常发 error。
+    """
+    async def event_stream():
+        try:
+            # 全流程墙钟计时（用于 done 事件里的 total，与 /api/query 语义一致）
+            t_total = time.perf_counter()
+            # 1) 安全检测 + 混合检索 + 重排（同步阻塞放线程池，避免卡事件循环）
+            prep = await run_in_threadpool(
+                rag_system.prepare,
+                question=request.question,
+                messages=request.messages,
+                age_group=request.age_group,
+                check_safety=True,
+                system_prompt_override=request.system_prompt_override,
+                prompt_id=request.prompt_id,
+            )
+            if prep.get("is_crisis_response"):
+                yield _sse("done", {
+                    "answer": prep.get("answer", ""),
+                    "is_crisis_response": True,
+                    "safety_check": prep.get("safety_check"),
+                })
+                return
+
+            # 2) 先发来源与检索耗时（生成尚未开始，前端可先展示引用）
+            yield _sse("sources", {
+                "sources": prep.get("sources") or [],
+                "timings": prep.get("timings") or {},
+            })
+
+            # 3) 流式生成：逐 token 下发
+            timings = prep.get("timings") or {}
+            full: list[str] = []
+            t_gen = time.perf_counter()
+            async for chunk in rag_system.rag.stream_generate(
+                prep["question"],
+                prep.get("context") or [],
+                age_group=request.age_group,
+                system_prompt_override=request.system_prompt_override,
+                prompt_id=request.prompt_id,
+                # 必须传归一化后的消息（role=human/ai），否则前端 user/assistant
+                # 角色在 _build_messages 里不匹配被静默丢弃，多轮历史全部丢失
+                messages=prep.get("norm_messages"),
+            ):
+                full.append(chunk)
+                yield _sse("token", {"text": chunk})
+                # 客户端断开（关页面/刷新）时及时终止生成，避免浪费上游 token 与算力
+                if await stream_request.is_disconnected():
+                    print("[query/stream] 客户端断开，终止生成", flush=True)
+                    break
+            answer = "".join(full)
+            # 生成耗时（从流式调用开始到结束）与全流程总耗时，供前端耗时栏展示
+            timings["llm"] = (time.perf_counter() - t_gen) * 1000
+            timings["total"] = (time.perf_counter() - t_total) * 1000
+
+            # 4) 持久化（与 /api/query 相同的落库语义；失败不影响已生成的回答）
+            session_id = None
+            if request.persist:
+                session_id = request.session_id or uuid.uuid4().hex
+                try:
+                    with crud.get_db() as db:
+                        crud.append_turn(
+                            db, session_id, prep.get("question", ""), answer,
+                            title=(request.title or prep.get("question") or None),
+                        )
+                        sc = prep.get("safety_check")
+                        if sc and sc.get("is_crisis"):
+                            crud.log_crisis(
+                                db, session_id,
+                                level=sc.get("level", "unknown"),
+                                keywords_found=sc.get("keywords_found"),
+                                question=prep.get("question", ""),
+                                response=prep.get("safety_note"),
+                                is_crisis_response=False,
+                            )
+                except Exception as e:
+                    print(f"[persist][WARN] 会话持久化失败（回答已正常返回）: {e}", flush=True)
+
+            yield _sse("done", {
+                "answer": answer,
+                "safety_note": prep.get("safety_note"),
+                "safety_check": prep.get("safety_check"),
+                "timings": timings,
+                "session_id": session_id,
+            })
+        except Exception as e:
+            # 记录完整异常到服务端日志；SSE error 事件只带异常类型（不暴露堆栈/路径），
+            # 便于前端展示具体原因、下次复现时直接定位
+            print(f"[query/stream][ERROR] {type(e).__name__}: {e}", flush=True)
+            yield _sse("error", {
+                "detail": f"生成失败（{type(e).__name__}），请稍后重试。",
+                "error_type": type(e).__name__,
+            })
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # 防止反代缓冲（本地直连无影响）
+        },
+    )
+
 
 @app.get("/api/health")
 async def health_check():

@@ -97,13 +97,15 @@ function renderTimings(timings, elapsed) {
     parts.push(`安全 ${formatMs(timings.safety)}`);
     parts.push(`嵌入 ${formatMs(timings.embed)}`);
     parts.push(`检索 ${formatMs(timings.retrieve)}`);
+    if (timings.hybrid != null) parts.push(`混合 ${formatMs(timings.hybrid)}`);
     if (timings.rerank != null) parts.push(`重排 ${formatMs(timings.rerank)}`);
-    parts.push(`生成 ${formatMs(timings.llm)}`);
-    if (elapsed != null) {
+    // llm / total 只在生成完成后才有值：缺失时跳过，避免显示占位的 "-"
+    if (timings.llm != null) parts.push(`生成 ${formatMs(timings.llm)}`);
+    if (timings.total != null) {
       parts.push(`后端总 ${formatMs(timings.total)}`);
+      if (elapsed != null) parts.push(`总时间 ${formatMs(elapsed)}`);
+    } else if (elapsed != null) {
       parts.push(`总时间 ${formatMs(elapsed)}`);
-    } else {
-      parts.push(`后端总 ${formatMs(timings.total)}`);
     }
   } else if (elapsed != null) {
     parts.push(`总时间 ${formatMs(elapsed)}`);
@@ -589,16 +591,72 @@ function renderWelcome() {
   return `<div class="welcome"><div class="bot-avatar">✦</div><h2>用提示词库测试 RAG 问答</h2><p>这里调用后端 /api/query，可在右侧选择使用哪条提示词。右侧「使用提示词」下拉框选择后，该对话会沿用此提示词。</p><div class="suggestions"><button class="suggestion">孩子总说睡不着，怎么沟通？</button><button class="suggestion">考试前焦虑怎么办？</button><button class="suggestion">如何判断是否需要专业帮助？</button></div></div>`;
 }
 
+function renderSourceChips(sources) {
+  if (!sources || !sources.length) return "";
+  const chips = sources.map((s) => `<span class="source-chip">[${s.index}] ${escapeHtml(s.title || "来源")}</span>`).join("");
+  return `<div class="sources">${chips}</div>`;
+}
+
 function renderMessage(m) {
-  const sources = m.sources && m.sources.length
-    ? `<div class="sources">${m.sources.map((s) => `<span class="source-chip">[${s.index}] ${escapeHtml(s.title || "来源")}</span>`).join("")}</div>`
-    : "";
+  const sources = renderSourceChips(m.sources);
   const timings = m.role === "assistant" ? renderTimings(m.timings, m.elapsed) : "";
-  return `<div class="message ${m.role}"><div><div class="message-meta">${m.role === "user" ? "你" : "心理 RAG"}</div><div class="message-bubble">${escapeHtml(m.content)}${sources}${timings}</div></div></div>`;
+  // 流式消息：保留固定 id，供 token 增量更新时定位；内容为空时显示占位文字
+  const streamingMsgId = m.streaming ? ' id="streaming-msg"' : "";
+  const streamingBubbleId = m.streaming ? ' id="streaming-bubble"' : "";
+  const body = m.streaming && !m.content ? "正在生成…" : m.content;
+  return `<div class="message ${m.role}"${streamingMsgId}><div><div class="message-meta">${m.role === "user" ? "你" : "心理 RAG"}</div><div class="message-bubble"${streamingBubbleId}>${escapeHtml(body)}${sources}${timings}</div></div></div>`;
+}
+
+// ---- 流式渲染辅助：只操作当前占位气泡 DOM，不整页重绘 ----
+function appendStreamingBubble() {
+  const list = document.querySelector("#message-list");
+  if (!list) return null;
+  const div = document.createElement("div");
+  div.className = "message assistant";
+  // 文本独立放进 .streaming-text，来源 chips / 耗时栏是它的兄弟节点（token 更新只改
+  // 文本节点，不误清来源）。返回气泡 DOM 引用由调用方闭包持有：整页重建/并发流存在时
+  // 不再依赖全局 querySelector，避免拿到旧气泡造成答案与来源交叉污染。
+  div.innerHTML = '<div><div class="message-meta">心理 RAG</div><div class="message-bubble"><span class="streaming-text">正在生成…</span></div></div>';
+  list.appendChild(div);
+  list.scrollTop = list.scrollHeight;
+  return { bubble: div.querySelector(".message-bubble"), textEl: div.querySelector(".streaming-text") };
+}
+
+function updateStreamingBubble(m, els) {
+  if (!els) return;
+  els.textEl.textContent = m.content || "正在生成…";
+  // 仅在用户接近底部时跟随滚动，避免打扰上翻阅读
+  const list = document.querySelector("#message-list");
+  if (list && list.scrollHeight - list.scrollTop - list.clientHeight < 100) {
+    list.scrollTop = list.scrollHeight;
+  }
+}
+
+function finalizeStreamingBubble(m, els) {
+  if (!els) return;
+  // 主路径：答案流式完成后，在此展示来源文档（先答案、后依据），再补耗时栏
+  if (m.sources && m.sources.length && !els.bubble.querySelector(".sources")) {
+    els.bubble.insertAdjacentHTML("beforeend", renderSourceChips(m.sources));
+  }
+  if (m.timings) els.bubble.insertAdjacentHTML("beforeend", renderTimings(m.timings, m.elapsed));
+  // 收尾新增了来源/耗时内容，接近底部时跟随滚动
+  const list = document.querySelector("#message-list");
+  if (list && list.scrollHeight - list.scrollTop - list.clientHeight < 100) {
+    list.scrollTop = list.scrollHeight;
+  }
 }
 
 async function sendChat(content) {
   const session = currentSession();
+  // 中断该会话上一个未完成的流（重复发送/切换时）
+  if (session._streamAbort) {
+    const oldPlaceholder = session.messages.find((m) => m.streaming);
+    session._streamAbort.abort();
+    session._streamAbort = null;
+    // 立即摘掉旧占位的流式标记：避免随后 renderChat 重建时渲染出多余流式节点，
+    // 也保证旧流收尾不会再把来源/耗时写进重建后的新气泡
+    if (oldPlaceholder) oldPlaceholder.streaming = false;
+  }
   session.messages.push({ role: "user", content });
   // 首次提问：立即用问题自动命名（清洗空白 + 限长），并在请求中带给后端持久化
   const isFirstTurn = session.messages.length === 1;
@@ -606,23 +664,89 @@ async function sendChat(content) {
   saveState(); renderChat();
   const btn = document.querySelector("#send-btn");
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>'; }
+
+  // 占位 assistant 消息：SSE 期间增量填充，不整页重绘
+  const placeholder = { role: "assistant", content: "", sources: [], timings: null, streaming: true };
+  session.messages.push(placeholder);
+  const streamEls = appendStreamingBubble();
+
+  const ac = new AbortController();
+  session._streamAbort = ac;
+  const started = performance.now();
   try {
-    // 多轮记忆：把当前会话的全部历史作为 messages 一起发给后端（不止当前一问）
-    const history = session.messages.map((m) => ({ role: m.role, content: m.content }));
+    // 多轮记忆：历史 = 除占位外的全部消息（占位尚未有内容，不应发给后端）
+    const history = session.messages
+      .filter((m) => m !== placeholder)
+      .map((m) => ({ role: m.role, content: m.content }));
     const body = { messages: history, session_id: session.id };
     if (state.chatPromptId) body.prompt_id = state.chatPromptId;
     if (isFirstTurn) body.title = session.name;
-    const started = performance.now();
-    const data = await api("POST", "/api/query", body);
-    const elapsed = Math.round(performance.now() - started);
-    session.messages.push({ role: "assistant", content: data.answer || "（无返回内容）", sources: data.sources || [], timings: data.timings || null, elapsed });
-    showToast(`回答已生成 · ${elapsed}ms`, "success");
+
+    const resp = await fetch("/api/query/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: ac.signal,
+    });
+    if (!resp.ok) {
+      let detail = `请求失败（${resp.status}）`;
+      try { const j = await resp.json(); detail = j.detail || detail; } catch { /* noop */ }
+      throw new Error(detail);
+    }
+
+    // 读取 SSE 流：按空行切分事件，逐事件处理
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const events = buf.split("\n\n");
+      buf = events.pop();
+      for (const evt of events) {
+        if (!evt.trim()) continue;
+        const lines = evt.split("\n");
+        const evtName = (lines.find((l) => l.startsWith("event: ")) || "event: message").slice(7).trim();
+        const dataLine = lines.find((l) => l.startsWith("data: "));
+        if (!dataLine) continue;
+        let data;
+        try { data = JSON.parse(dataLine.slice(6)); } catch { continue; }
+        if (evtName === "sources") {
+          // 只暂存来源数据，不立即渲染：等答案流式生成完成、收尾时再显示，
+          // 呈现顺序为「先看答案 → 再展示依据文档与耗时」
+          placeholder.sources = data.sources || [];
+        } else if (evtName === "token") {
+          placeholder.content += data.text || "";
+          updateStreamingBubble(placeholder, streamEls);
+        } else if (evtName === "done") {
+          if (data.answer != null) placeholder.content = data.answer;
+          placeholder.timings = data.timings || null;
+        } else if (evtName === "error") {
+          throw new Error(data.detail || "生成失败");
+        }
+      }
+    }
+    placeholder.elapsed = Math.round(performance.now() - started);
+    showToast(`回答已生成 · ${placeholder.elapsed}ms`, "success");
   } catch (e) {
-    session.messages.push({ role: "assistant", content: `请求失败：${e.message}` });
-    showToast(e.message, "error");
+    if (e.name === "AbortError") {
+      // 用户主动取消（切换会话/删除/新发送），保留已生成部分
+    } else {
+      placeholder.content = placeholder.content || `请求失败：${e.message}`;
+      showToast(e.message, "error");
+    }
+  } finally {
+    placeholder.streaming = false;
+    // 仅当自己仍是当前流时才清空句柄：并发场景下旧流 finally 不能误清新流的 abort 引用
+    if (session._streamAbort === ac) session._streamAbort = null;
+    finalizeStreamingBubble(placeholder, streamEls);
+    // 恢复发送按钮（流式版不 renderChat，按钮不会自动重建，需要手动恢复）
+    const btn = document.querySelector("#send-btn");
+    if (btn) { btn.disabled = false; btn.innerHTML = "↑"; }
+    saveState();
   }
-  saveState(); renderChat();
-  // 发送后自动聚焦输入框，便于连续追问（移动端软键盘体验关键）
+  // 发送后自动聚焦输入框，便于连续追问
   const chatInputNow = document.querySelector("#chat-input");
   if (chatInputNow) chatInputNow.focus();
 }
@@ -686,6 +810,9 @@ async function ensureActiveSession() {
 }
 
 async function selectSession(id) {
+  // 切换会话前中断旧会话正在进行的流式生成
+  const cur = currentSession();
+  if (cur && cur._streamAbort) { cur._streamAbort.abort(); cur._streamAbort = null; }
   state.activeSessionId = id;
   const sess = state.sessions.find((s) => s.id === id);
   if (sess && !sess.loaded) await loadSessionMessages(id);
@@ -722,6 +849,8 @@ async function deleteSession(id) {
   // 与提示词管理/对比历史一致的自定义确认弹窗，避免误触即删
   const ok = await confirmDialog({ title: "删除对话", message: `确定删除对话「${sess.name}」吗？删除后不可恢复。`, confirmText: "删除", danger: true });
   if (!ok) return;
+  // 删除前中断该会话正在进行的流式生成
+  if (sess._streamAbort) { sess._streamAbort.abort(); sess._streamAbort = null; }
   try {
     await api("DELETE", `/api/sessions/${encodeURIComponent(id)}`);
     state.sessions = state.sessions.filter((s) => s.id !== id);

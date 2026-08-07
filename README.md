@@ -54,10 +54,6 @@ OPENAI_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1  # OpenAI 兼�
 CHAT_MODEL=qwen3.6-flash       # 对话模型
 ```
 
-> 想调 `RERANK_TOP_K` / `MMR_LAMBDA` / `MIN_RELEVANCE_SCORE` / `CHAT_TEMPERATURE` / `RATE_LIMIT_*` 等参数？它们都在 `config/settings.py` 有默认值与注释，需要时**任选其一**覆盖：直接改 `settings.py`，或在 `.env` 加同名键覆盖（键名见 `settings.py` 的 `os.getenv("X", 默认值)`）。完整可覆盖变量清单见 `.env.example`。
-
-> ⚠️ **安全提醒**：`HOST` 默认 `127.0.0.1`（仅本机）。**切勿改成 `0.0.0.0`**，避免暴露到局域网。
-
 ## 构建知识库
 
 主链路仅支持 JSONL 卡片导入（见 `scripts/import_cards.py`），不依赖 `unstructured` / `pypdf` / `docx2txt`；如需扩展 PDF / Markdown 导入请自行补充依赖与加载逻辑。
@@ -149,8 +145,6 @@ Start-Process http://127.0.0.1:8000/
 1. **提示词管理**：不区分儿童 / 少年 / 青少年 / 青年。`config/system_prompt.json` 现在是一个**提示词库**（`prompts[]`），支持新增、重命名、删除、编辑、设置激活提示词；所有提示词都在左侧列表展示，不会互相覆盖。中间是编辑器，右侧是实时渲染预览。点击「保存并同步」（`Ctrl/Cmd + S`）把当前提示词写入文件，「设为激活」指定 RAG 默认使用的提示词，「还原默认」一键复位。
 2. **对话联调**：多会话（新建 / 重命名 / 删除 / 导出），直接调用后端 `/api/query` 进行 RAG 问答。右侧 Inspector 可选择使用哪条提示词；默认使用「激活提示词」。
 3. **提示词对比**：输入同一问题，A/B 双栏可分别选择不同提示词（A 可选出厂默认库，B 可选当前编辑库）跑 RAG，对照答案与引用来源，并保存对比历史（可点击恢复）。
-
-> 系统提示词原本硬编码在 `modules/rag_core.py`，现已外置为可编辑文件，由 `modules/prompt_store.py` 统一加载/组装。`config/system_prompt.default.json` 为出厂默认库（已提交，作对比基线，请勿手改其语义）；`config/system_prompt.json` 为用户态库（已被 `.gitignore` 忽略）。旧版单字段 `system_prompt` 结构会在首次读取时自动迁移为 `prompts[]`。**前端所有状态（提示词选择、会话、对比历史）现已统一持久化到 SQLite（`data/rag_psychology.sqlite3`），不再使用浏览器 `localStorage`；SQLite 是前端唯一数据源，刷新页面或换设备均可恢复。** 详见下文「关系型数据库（SQLite）」一节。
 
 相关接口：
 
