@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Union
 _Q_PREVIEW = 48
 
 
-def _log_query_timings(question: str, age_group, timings: Dict, source_count: int):
+def _log_query_timings(question: str, timings: Dict, source_count: int):
     """统一打印一次 /api/query 的分阶段耗时（后台 print，便于定位瓶颈）。"""
     def ms(key):
         v = timings.get(key)
@@ -23,14 +23,13 @@ def _log_query_timings(question: str, age_group, timings: Dict, source_count: in
     q = (question or "").replace("\n", " ").strip()
     q_preview = (q[:_Q_PREVIEW] + "…") if len(q) > _Q_PREVIEW else q
     tid = threading.get_ident() % 100000  # 短线程号，便于并发时区分 A/B
-    ag = age_group or "-"
     safety = ms("safety")
     embed = ms("embed")
     retrieve = ms("retrieve")
     llm = ms("llm")
     total = ms("total")
     print(
-        f"[query][t:{tid}][{ag}] q=\"{q_preview}\" "
+        f"[query][t:{tid}] q=\"{q_preview}\" "
         f"safety: {safety} | embed: {embed} | retrieve: {retrieve} | "
         f"llm: {llm} | total: {total} | src: {source_count}",
         flush=True,
@@ -76,7 +75,6 @@ class PsychologyRAGSystem:
     def prepare(
         self,
         question: str = None,
-        age_group: str = None,
         check_safety: bool = True,
         system_prompt_override: Optional[str] = None,
         prompt_id: Optional[str] = None,
@@ -91,7 +89,6 @@ class PsychologyRAGSystem:
         norm_messages, current_question = self._normalize(messages, question)
         result = {
             "question": current_question,
-            "age_group": age_group,
             "context": [],
             "answer": "",
             "sources": [],
@@ -114,11 +111,11 @@ class PsychologyRAGSystem:
                 result["is_crisis_response"] = True
                 timings["total"] = (time.perf_counter() - t0) * 1000
                 result["timings"] = timings
-                _log_query_timings(current_question, age_group, timings, 0)
+                _log_query_timings(current_question, timings, 0)
                 return result
 
         # 检索：混合召回 + 重排
-        context = self.rag.retrieve(current_question, age_group, timings=timings)
+        context = self.rag.retrieve(current_question, timings=timings)
         result["context"] = context
         result["sources"] = build_sources(context)
         # 中/低危：附带关怀提示
@@ -130,7 +127,6 @@ class PsychologyRAGSystem:
     def query(
         self,
         question: str = None,
-        age_group: str = None,
         check_safety: bool = True,
         system_prompt_override: Optional[str] = None,
         prompt_id: Optional[str] = None,
@@ -143,7 +139,7 @@ class PsychologyRAGSystem:
         """
         # 全流程墙钟：从 prepare（安全+检索+重排）到生成结束，与 SSE 端点 total 语义一致
         t_query = time.perf_counter()
-        prep = self.prepare(question, age_group, check_safety, system_prompt_override, prompt_id, messages)
+        prep = self.prepare(question, check_safety, system_prompt_override, prompt_id, messages)
         timings = prep.get("timings") or {}
 
         # 高危：直接返回危机响应（prepare 内已记录全程 total）
@@ -152,14 +148,14 @@ class PsychologyRAGSystem:
 
         # 生成
         gen = self.rag.generate(
-            prep["question"], prep.get("context") or [], age_group,
+            prep["question"], prep.get("context") or [],
             system_prompt_override, prompt_id, timings=timings, messages=prep.get("norm_messages"),
         )
         prep["answer"] = gen["answer"]
         prep["sources"] = gen["sources"]
         timings["total"] = (time.perf_counter() - t_query) * 1000
         prep["timings"] = timings
-        _log_query_timings(prep["question"], age_group, timings, len(prep["sources"]))
+        _log_query_timings(prep["question"], timings, len(prep["sources"]))
         return prep
 
 # 创建全局实例

@@ -82,11 +82,6 @@ class QueryRequest(BaseModel):
         None,
         description="多轮对话历史，每条含 role 与 content；role 可为 human/ai/user/assistant。最后一条须为用户问题。",
     )
-    age_group: Optional[str] = Field(
-        None,
-        description="年龄段分桶：child / early_teen / teen / late_teen。留空表示不限年龄，语气默认按 teen。",
-        pattern="^(child|early_teen|teen|late_teen)$",
-    )
     system_prompt_override: Optional[str] = Field(
         None,
         description="可选：覆盖使用的系统提示词（不落盘），用于前端在不保存的情况下预览/对比提示词效果。",
@@ -170,7 +165,6 @@ async def query(request: QueryRequest):
             rag_system.query,
             question=request.question,
             messages=request.messages,
-            age_group=request.age_group,
             check_safety=True,
             system_prompt_override=request.system_prompt_override,
             prompt_id=request.prompt_id,
@@ -250,7 +244,6 @@ async def query_stream(stream_request: Request, request: QueryRequest):
                 rag_system.prepare,
                 question=request.question,
                 messages=request.messages,
-                age_group=request.age_group,
                 check_safety=True,
                 system_prompt_override=request.system_prompt_override,
                 prompt_id=request.prompt_id,
@@ -276,7 +269,6 @@ async def query_stream(stream_request: Request, request: QueryRequest):
             async for chunk in rag_system.rag.stream_generate(
                 prep["question"],
                 prep.get("context") or [],
-                age_group=request.age_group,
                 system_prompt_override=request.system_prompt_override,
                 prompt_id=request.prompt_id,
                 # 必须传归一化后的消息（role=human/ai），否则前端 user/assistant

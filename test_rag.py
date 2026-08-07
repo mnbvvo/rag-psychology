@@ -18,7 +18,7 @@ async def test_basic_query():
     for question in test_questions:
         print(f"\n问题: {question}")
         try:
-            result = rag_system.query(question=question, age_group="teen", check_safety=True)
+            result = rag_system.query(question=question, check_safety=True)
             print(f"回答: {result['answer'][:200]}...")
             print(f"安全检查: {'是' if result.get('is_crisis_response') else '否'}")
             print(f"来源数量: {len(result.get('sources', []))}")
@@ -39,7 +39,7 @@ async def test_safety_check():
     for statement in crisis_statements:
         print(f"\n语句: {statement}")
         try:
-            result = rag_system.query(question=statement, age_group="teen", check_safety=True)
+            result = rag_system.query(question=statement, check_safety=True)
             safety = result.get('safety_check') or {}
             print(f"危机等级: {safety.get('level', 'none')}")
             print(f"关键词: {[kw['keyword'] for kw in safety.get('keywords_found', [])]}")

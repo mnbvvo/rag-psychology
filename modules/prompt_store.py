@@ -317,7 +317,6 @@ def get_prompt_by_id(prompt_id: str) -> Optional[Dict]:
 
 
 def build_system_prompt(
-    age_group: str = "teen",
     context_text: str = "",
     low_relevance: bool = False,
     system_prompt_override: Optional[str] = None,

@@ -53,7 +53,6 @@ class Settings:
     SEARCH_TYPE = os.getenv("SEARCH_TYPE", "similarity")  # similarity 或 mmr（最大边际相关，兼顾多样性）
     MMR_LAMBDA = float(os.getenv("MMR_LAMBDA", "0.5"))  # mmr 模式下多样性权重：0=最多样，1=最相关
     MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.2"))  # 相关性下限，0=不启用（建议 0.2~0.35）
-    AGE_GROUPS = ["child", "early_teen", "teen", "late_teen"]  # 年龄分桶（检索过滤 + 回答语气适配）
 
     # 混合检索（向量召回 ∪ BM25 关键词召回 → 重排精排）
     # 心理领域高频症状词（失眠/厌学/霸凌等）词面命中比语义匹配更可靠；

@@ -69,13 +69,13 @@ python scripts/import_cards.py "data/your_knowledge_base.jsonl" --reset
 - `--review-status approved`：只导指定审核状态（**安全敏感场景建议只导 `approved`**）。
 - `--batch-size 50`：分批写入，默认 50。
 
-导入把每条记录转成一个文档，写入的 metadata 含 `card_id` / `source_id` / `chunk_id` / `title` / `domains` / `audiences` / `age_stages` / `risk_level` / `evidence_level` / `review_status` / `age_group` / `source` / `filename`，供过滤与来源展示。
+导入把每条记录转成一个文档，写入的 metadata 含 `card_id` / `source_id` / `chunk_id` / `title` / `domains` / `audiences` / `age_stages` / `risk_level` / `evidence_level` / `review_status` / `age_group` / `source` / `filename`，供来源展示与后续扩展使用。
 
-> ⚠️ **年龄过滤依赖 `age_group` 元数据**：该字段在导入时由 `age_stages` 中文标签归一化得到（见下节）。若你之前导入过旧数据，请务必 `--reset` 重新导入，否则按 `age_group` 过滤会漏掉旧卡片。
+> ℹ️ **`age_group` 仅作数据留档**：该字段在导入时由 `age_stages` 中文标签归一化得到，保留在卡片元数据中供后续扩展；**当前检索与回答不使用年龄过滤/语气适配**（知识库未按年龄充分分类，硬过滤会误杀卡片）。
 
-## 年龄分层
+## 年龄分层（数据留档）
 
-导入时按 `age_stages` 映射到分桶（`age_group`）：
+导入时按 `age_stages` 映射到分桶（`age_group`），仅写入元数据：
 
 | age_stages 含 | age_group |
 |---|---|
@@ -84,7 +84,7 @@ python scripts/import_cards.py "data/your_knowledge_base.jsonl" --reset
 | 青少年 | `teen` |
 | 青年 / 高中生 / 职高 / 大学 | `late_teen` |
 
-无法识别的标签映射为空（不参与年龄过滤）。API 的 `age_group` 参数取上表四个值，传入后检索按对应元数据过滤，且回答语气适配该年龄段；不传则不过滤、语气默认 `teen`。
+无法识别的标签映射为空。该字段只随卡片留存，不参与检索过滤与回答生成。
 
 ## 启动
 
@@ -111,10 +111,10 @@ curl http://127.0.0.1:8000/api/health
 请求体：
 
 ```json
-{ "question": "孩子总是情绪低落、没兴趣，家长该怎么做？", "age_group": "teen" }
+{ "question": "孩子总是情绪低落、没兴趣，家长该怎么做？" }
 ```
 
-- `question`（必填）、`age_group`（可选：`child` / `early_teen` / `teen` / `late_teen`）。
+- `question`（必填）。
 
 返回：
 
@@ -352,7 +352,7 @@ python test_rag.py
 ## 常见问题
 
 1. **缺模块**：`pip install -r requirements.txt`。主链路无需 `unstructured`。
-2. **导入后无结果**：依次检查——知识库是否导入成功；`OPENAI_API_KEY` / `OPENAI_API_BASE` 是否有效；问题与卡片是否匹配；用了 `age_group` 过滤却无结果需 `--reset` 重导；开了 `MIN_RELEVANCE_SCORE` 后结果变少则调低或设 `0`。
+2. **导入后无结果**：依次检查——知识库是否导入成功；`OPENAI_API_KEY` / `OPENAI_API_BASE` 是否有效；问题与卡片是否匹配；开了 `MIN_RELEVANCE_SCORE` 后结果变少则调低或设 `0`。
 3. **数据重复**：`import_cards.py` 对文件内重复 `card_id` 报错；重复运行会重复写入，建议 `--reset` 重建或先清空 `data/chroma/`。
 
 ## 备注

@@ -45,16 +45,9 @@ class PsychologyRAG:
             extra_body={"enable_thinking": settings.ENABLE_THINKING},  # 思考/推理模式开关
         )
 
-    def _build_age_filter(self, age_group: str | None) -> dict | None:
-        """仅当 age_group 命中已知分桶时才构建元数据过滤条件。"""
-        if age_group in settings.AGE_GROUPS:
-            return {"age_group": age_group}
-        return None
-
     def retrieve(
         self,
         question: str,
-        age_group: str = "teen",
         timings: Optional[Dict] = None,
     ) -> List[Document]:
         """检索相关文档：多召回 -> （可选重排）-> 截断。
@@ -64,7 +57,7 @@ class PsychologyRAG:
         """
         from modules.vector_store import get_last_embed_ms
 
-        filter_dict = self._build_age_filter(age_group)
+        filter_dict = None  # 年龄分桶过滤已移除（age_group 元数据保留在库中，检索不再按年龄过滤）
         rerank_enabled = settings.RERANK_ENABLED
 
         t0 = time.perf_counter()
@@ -182,7 +175,6 @@ class PsychologyRAG:
         self,
         question: str,
         context: List[Document],
-        age_group: str = "teen",
         system_prompt_override: Optional[str] = None,
         prompt_id: Optional[str] = None,
         messages: Optional[List[Dict]] = None,
@@ -199,7 +191,6 @@ class PsychologyRAG:
         )
         # 低相关提示：检索结果偏弱时，要求模型如实说明而非编造
         system_prompt = build_system_prompt(
-            age_group=age_group,
             context_text=context_text,
             low_relevance=not context,
             system_prompt_override=system_prompt_override,
@@ -223,7 +214,6 @@ class PsychologyRAG:
         self,
         question: str,
         context: List[Document],
-        age_group: str = "teen",
         system_prompt_override: Optional[str] = None,
         prompt_id: Optional[str] = None,
         timings: Optional[Dict] = None,
@@ -237,7 +227,7 @@ class PsychologyRAG:
         messages：多轮对话历史；提供时会把完整历史拼入 prompt，question 仅用于检索与日志。
         """
         prompt_messages = self._build_messages(
-            question, context, age_group, system_prompt_override, prompt_id, messages
+            question, context, system_prompt_override, prompt_id, messages
         )
 
         # 生成回答（LLM 调用是主要耗时来源，单独计时）
@@ -256,7 +246,6 @@ class PsychologyRAG:
         self,
         question: str,
         context: List[Document],
-        age_group: str = "teen",
         system_prompt_override: Optional[str] = None,
         prompt_id: Optional[str] = None,
         messages: Optional[List[Dict]] = None,
@@ -266,7 +255,7 @@ class PsychologyRAG:
         供 /api/query/stream（SSE）使用：检索已由 prepare 完成，这里只做生成。
         """
         prompt_messages = self._build_messages(
-            question, context, age_group, system_prompt_override, prompt_id, messages
+            question, context, system_prompt_override, prompt_id, messages
         )
         async for chunk in self.llm.astream(prompt_messages):
             content = chunk.content if hasattr(chunk, "content") else str(chunk)
@@ -277,7 +266,6 @@ class PsychologyRAG:
     def run(
         self,
         question: str,
-        age_group: str = "teen",
         system_prompt_override: Optional[str] = None,
         prompt_id: Optional[str] = None,
         timings: Optional[Dict] = None,
@@ -285,14 +273,13 @@ class PsychologyRAG:
     ) -> Dict:
         """同步执行完整的RAG流程"""
         # 检索
-        context = self.retrieve(question, age_group, timings=timings)
+        context = self.retrieve(question, timings=timings)
 
         # 生成
-        result = self.generate(question, context, age_group, system_prompt_override, prompt_id, timings=timings, messages=messages)
+        result = self.generate(question, context, system_prompt_override, prompt_id, timings=timings, messages=messages)
 
         return {
             "question": question,
-            "age_group": age_group,
             "context": context,
             "answer": result["answer"],
             "sources": result["sources"],
