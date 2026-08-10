@@ -99,10 +99,15 @@ class PsychologyRAGSystem:
         timings: Dict[str, float] = {}
         t0 = time.perf_counter()
 
-        # 安全检查（基于当前问题）
+        # 安全检查（基于当前问题）：L0 关键词 + L1 语义（高危意图原型距离）。
+        # 语义层复用本向量库的 embedding（带缓存），与检索共用同一次 API 调用。
         if check_safety:
             ts = time.perf_counter()
-            safety_result = self.safety_checker.check_and_respond(current_question)
+            safety_result = self.safety_checker.check_full(
+                current_question,
+                embed_query_fn=self.vectorstore.embeddings.embed_query,
+                embed_documents_fn=self.vectorstore.embeddings.embed_documents,
+            )
             timings["safety"] = (time.perf_counter() - ts) * 1000
             result["safety_check"] = safety_result
             # 高危：直接返回危机响应，不走检索与生成
@@ -153,6 +158,12 @@ class PsychologyRAGSystem:
         )
         prep["answer"] = gen["answer"]
         prep["sources"] = gen["sources"]
+        # 回答侧安全复查：LLM 输出命中高危关键词时追加安全提醒（并落审计）
+        if check_safety:
+            answer, ans_check = self.safety_checker.review_answer(gen["answer"])
+            prep["answer"] = answer
+            if ans_check:
+                prep["answer_safety_check"] = ans_check
         timings["total"] = (time.perf_counter() - t_query) * 1000
         prep["timings"] = timings
         _log_query_timings(prep["question"], timings, len(prep["sources"]))

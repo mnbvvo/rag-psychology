@@ -597,13 +597,25 @@ function renderSourceChips(sources) {
   return `<div class="sources">${chips}</div>`;
 }
 
+// 轻量 Markdown 符号清洗：本项目是纯文本渲染，去掉 **加粗**/__下划线__/*斜体*/`代码`/行首标题号，
+// 避免满屏 * 号影响观感（危机话术模板与 LLM 输出都可能带这些符号）
+function cleanMarkdown(s) {
+  if (!s) return s;
+  return String(s)
+    .replace(/\*\*([^*\n]+)\*\*/g, "$1")
+    .replace(/__([^_\n]+)__/g, "$1")
+    .replace(/(^|\n)#{1,6}\s*/g, "$1")
+    .replace(/\*([^*\n]+)\*/g, "$1")
+    .replace(/`([^`\n]+)`/g, "$1");
+}
+
 function renderMessage(m) {
   const sources = renderSourceChips(m.sources);
   const timings = m.role === "assistant" ? renderTimings(m.timings, m.elapsed) : "";
   // 流式消息：保留固定 id，供 token 增量更新时定位；内容为空时显示占位文字
   const streamingMsgId = m.streaming ? ' id="streaming-msg"' : "";
   const streamingBubbleId = m.streaming ? ' id="streaming-bubble"' : "";
-  const body = m.streaming && !m.content ? "正在生成…" : m.content;
+  const body = cleanMarkdown(m.streaming && !m.content ? "正在生成…" : m.content);
   return `<div class="message ${m.role}"${streamingMsgId}><div><div class="message-meta">${m.role === "user" ? "你" : "心理 RAG"}</div><div class="message-bubble"${streamingBubbleId}>${escapeHtml(body)}${sources}${timings}</div></div></div>`;
 }
 
@@ -624,7 +636,7 @@ function appendStreamingBubble() {
 
 function updateStreamingBubble(m, els) {
   if (!els) return;
-  els.textEl.textContent = m.content || "正在生成…";
+  els.textEl.textContent = cleanMarkdown(m.content) || "正在生成…";
   // 仅在用户接近底部时跟随滚动，避免打扰上翻阅读
   const list = document.querySelector("#message-list");
   if (list && list.scrollHeight - list.scrollTop - list.clientHeight < 100) {
@@ -634,11 +646,21 @@ function updateStreamingBubble(m, els) {
 
 function finalizeStreamingBubble(m, els) {
   if (!els) return;
+  // 兜底：任何"只有 done 没有 token"的路径（如高危拦截），把最终答案写回文本节点
+  els.textEl.textContent = cleanMarkdown(m.content) || "正在生成…";
   // 主路径：答案流式完成后，在此展示来源文档（先答案、后依据），再补耗时栏
   if (m.sources && m.sources.length && !els.bubble.querySelector(".sources")) {
     els.bubble.insertAdjacentHTML("beforeend", renderSourceChips(m.sources));
   }
   if (m.timings) els.bubble.insertAdjacentHTML("beforeend", renderTimings(m.timings, m.elapsed));
+  // 中/低危关怀提示（safety_note）与高危危机标记
+  if (m.safetyNote && !els.bubble.querySelector(".safety-note")) {
+    els.bubble.insertAdjacentHTML("beforeend", `<div class="safety-note">${escapeHtml(cleanMarkdown(m.safetyNote))}</div>`);
+  }
+  if (m.isCrisis) {
+    const msg = els.bubble.closest(".message");
+    if (msg) msg.classList.add("crisis");
+  }
   // 收尾新增了来源/耗时内容，接近底部时跟随滚动
   const list = document.querySelector("#message-list");
   if (list && list.scrollHeight - list.scrollTop - list.clientHeight < 100) {
@@ -722,6 +744,11 @@ async function sendChat(content) {
         } else if (evtName === "done") {
           if (data.answer != null) placeholder.content = data.answer;
           placeholder.timings = data.timings || null;
+          if (data.safety_note) placeholder.safetyNote = data.safety_note;
+          if (data.is_crisis_response) placeholder.isCrisis = true;
+          // 高危危机拦截等场景后端只发 done 不发 token，这里必须回写 DOM，
+          // 否则界面停留在"正在生成…"（数据有答案、界面没显示）
+          updateStreamingBubble(placeholder, streamEls);
         } else if (evtName === "error") {
           throw new Error(data.detail || "生成失败");
         }

@@ -24,6 +24,22 @@ engine = create_engine(settings.DB_URL, connect_args=_connect_args, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
 
 
+def _migrate_crisis_audit_columns() -> None:
+    """SQLite 轻量迁移：老库为 crisis_audit 补充 detect_method / confidence 列。
+
+    create_all 只会建新表、不会给已存在的表加列，因此对老库需要显式 ALTER。
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(crisis_audit)"))}
+        if "detect_method" not in cols:
+            conn.execute(text("ALTER TABLE crisis_audit ADD COLUMN detect_method VARCHAR(20)"))
+        if "confidence" not in cols:
+            conn.execute(text("ALTER TABLE crisis_audit ADD COLUMN confidence FLOAT"))
+        conn.commit()
+
+
 def init_db() -> None:
     """幂等创建所有表，并确保 SQLite 文件所在目录存在。"""
     if _is_sqlite(settings.DB_URL):
@@ -34,3 +50,9 @@ def init_db() -> None:
     # 触发模型注册（必须在 create_all 之前导入）
     from . import models  # noqa: F401
     models.Base.metadata.create_all(bind=engine)
+    # 老库轻量迁移（仅 SQLite 支持 PRAGMA / ALTER 语义）
+    if _is_sqlite(settings.DB_URL):
+        try:
+            _migrate_crisis_audit_columns()
+        except Exception as e:
+            print(f"[db][WARN] crisis_audit 列迁移失败（不影响启动）: {e}", flush=True)

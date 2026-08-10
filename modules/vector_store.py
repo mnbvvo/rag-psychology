@@ -4,6 +4,7 @@
 """
 import time
 import threading
+from collections import OrderedDict
 from typing import List, Optional, Dict
 from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
@@ -12,6 +13,26 @@ from config.settings import settings
 
 # 线程隔离的 embedding 耗时存放区，供检索阶段拆分 embed/retrieve 耗时。
 _embed_tls = threading.local()
+
+# embedding 进程内 LRU 缓存：同一文本（如用户问题）在语义检测器与向量检索之间
+# 只真实调用一次 embedding API，第二次起直接命中缓存（省 300ms+ 与费用）。
+_embed_cache: "OrderedDict[tuple, list]" = OrderedDict()
+_embed_cache_lock = threading.Lock()
+
+
+def _cached_embed(key: tuple, do_embed):
+    """按 (model, text) 缓存单条文本的向量；缓存满时淘汰最久未用项。"""
+    with _embed_cache_lock:
+        if key in _embed_cache:
+            _embed_cache.move_to_end(key)
+            return list(_embed_cache[key])
+    vec = do_embed()
+    if vec is not None:
+        with _embed_cache_lock:
+            _embed_cache[key] = list(vec)
+            if len(_embed_cache) > settings.EMBED_CACHE_SIZE:
+                _embed_cache.popitem(last=False)
+    return vec
 
 
 class TimedOpenAIEmbeddings(OpenAIEmbeddings):
@@ -24,7 +45,9 @@ class TimedOpenAIEmbeddings(OpenAIEmbeddings):
     def embed_query(self, text: str, *args, **kwargs):
         t = time.perf_counter()
         try:
-            return super().embed_query(text, *args, **kwargs)
+            base_embed = super().embed_query  # 零参数 super() 只能在方法体内直接使用
+            key = (self.model, text)
+            return _cached_embed(key, lambda: base_embed(text, *args, **kwargs))
         finally:
             _embed_tls.embed_ms = (time.perf_counter() - t) * 1000
 

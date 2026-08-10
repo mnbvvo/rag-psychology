@@ -7,7 +7,7 @@
 """
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, Integer, DateTime, Boolean, Text, ForeignKey
+from sqlalchemy import String, Integer, DateTime, Boolean, Text, Float, ForeignKey
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -61,6 +61,8 @@ class CrisisAudit(Base):
     question: Mapped[str] = mapped_column(Text, nullable=False)
     response: Mapped[str | None] = mapped_column(Text, nullable=True)  # 实际返回的安全话术
     is_crisis_response: Mapped[bool] = mapped_column(Boolean, default=False)
+    detect_method: Mapped[str | None] = mapped_column(String(20), nullable=True)  # keyword / semantic / keyword+semantic
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)  # 语义距离（越小越贴近高危意图原型）
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 

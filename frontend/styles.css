@@ -745,6 +745,26 @@ button, input, textarea, select {
   border-color: var(--accent);
 }
 
+/* 危机拦截：气泡浅红描边，视觉上与普通回答区分 */
+.message.crisis .message-bubble {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+/* 中/低危关怀提示（safety_note）：浅琥珀附注，保留换行 */
+.message .safety-note {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: #fff7e6;
+  border: 1px solid #f2d9a8;
+  color: #7a5b1e;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .message-meta {
   font-size: 12px;
   color: var(--text-muted);

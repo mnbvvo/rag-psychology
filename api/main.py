@@ -201,6 +201,21 @@ async def query(request: QueryRequest):
                             question=current_question,
                             response=answer if result.get("is_crisis_response") else result.get("safety_note"),
                             is_crisis_response=bool(result.get("is_crisis_response")),
+                            detect_method=sc.get("detect_method") if isinstance(sc, dict) else None,
+                            confidence=sc.get("confidence") if isinstance(sc, dict) else None,
+                        )
+                    # 回答侧命中高危：另记一条审计（detect_method=answer_check）
+                    ans_sc = result.get("answer_safety_check")
+                    if ans_sc and ans_sc.get("is_crisis"):
+                        crud.log_crisis(
+                            db,
+                            session_id,
+                            level=ans_sc.get("level", "high"),
+                            keywords_found=ans_sc.get("keywords_found"),
+                            question=current_question,
+                            response=answer,
+                            is_crisis_response=False,
+                            detect_method="answer_check",
                         )
             except Exception as e:
                 print(f"[persist][WARN] 会话持久化失败（回答已正常返回）: {e}", flush=True)
@@ -249,6 +264,29 @@ async def query_stream(stream_request: Request, request: QueryRequest):
                 prompt_id=request.prompt_id,
             )
             if prep.get("is_crisis_response"):
+                # 高危拦截同样写会话与危机审计（此前缺失：前端对话页走的就是 stream，
+                # 高危问答既不进历史也不留审计；现与 /api/query 高危路径对齐）
+                if request.persist:
+                    session_id = request.session_id or uuid.uuid4().hex
+                    try:
+                        with crud.get_db() as db:
+                            crud.append_turn(
+                                db, session_id, prep.get("question", ""), prep.get("answer", ""),
+                                title=(request.title or prep.get("question") or None),
+                            )
+                            sc = prep.get("safety_check") or {}
+                            crud.log_crisis(
+                                db, session_id,
+                                level=sc.get("level", "unknown"),
+                                keywords_found=sc.get("keywords_found"),
+                                question=prep.get("question", ""),
+                                response=prep.get("answer", ""),
+                                is_crisis_response=True,
+                                detect_method=sc.get("detect_method") if isinstance(sc, dict) else None,
+                                confidence=sc.get("confidence") if isinstance(sc, dict) else None,
+                            )
+                    except Exception as e:
+                        print(f"[persist][WARN] 高危危机审计写入失败: {e}", flush=True)
                 yield _sse("done", {
                     "answer": prep.get("answer", ""),
                     "is_crisis_response": True,
@@ -282,6 +320,9 @@ async def query_stream(stream_request: Request, request: QueryRequest):
                     print("[query/stream] 客户端断开，终止生成", flush=True)
                     break
             answer = "".join(full)
+            # 回答侧安全复查：命中高危关键词时追加安全提醒（token 已发，追加部分随 done 的 answer 下发）
+            ans_check = None
+            answer, ans_check = rag_system.safety_checker.review_answer(answer)
             # 生成耗时（从流式调用开始到结束）与全流程总耗时，供前端耗时栏展示
             timings["llm"] = (time.perf_counter() - t_gen) * 1000
             timings["total"] = (time.perf_counter() - t_total) * 1000
@@ -305,6 +346,19 @@ async def query_stream(stream_request: Request, request: QueryRequest):
                                 question=prep.get("question", ""),
                                 response=prep.get("safety_note"),
                                 is_crisis_response=False,
+                                detect_method=sc.get("detect_method") if isinstance(sc, dict) else None,
+                                confidence=sc.get("confidence") if isinstance(sc, dict) else None,
+                            )
+                        # 回答侧命中高危：另记一条审计（detect_method=answer_check）
+                        if ans_check and ans_check.get("is_crisis"):
+                            crud.log_crisis(
+                                db, session_id,
+                                level=ans_check.get("level", "high"),
+                                keywords_found=ans_check.get("keywords_found"),
+                                question=prep.get("question", ""),
+                                response=answer,
+                                is_crisis_response=False,
+                                detect_method="answer_check",
                             )
                 except Exception as e:
                     print(f"[persist][WARN] 会话持久化失败（回答已正常返回）: {e}", flush=True)
@@ -581,6 +635,20 @@ async def startup_event():
                 pass
 
         threading.Thread(target=_warm_reranker, daemon=True).start()
+    # 预热语义危机检测锚点（后台批量 embed 约几秒，不阻塞启动；
+    # 未就绪时问答回退关键词，避免首次请求被同步构建卡住）
+    if settings.SEMANTIC_CHECK_ENABLED:
+        import threading as _th
+
+        def _warm_crisis_detector():
+            try:
+                from modules.crisis_detector import get_crisis_detector
+
+                get_crisis_detector().warm_up()
+            except Exception as e:
+                print(f"[startup][WARN] 语义危机检测预热失败（首次问答将回退关键词）: {e}", flush=True)
+
+        _th.Thread(target=_warm_crisis_detector, daemon=True).start()
     print("=" * 50)
     print("青少年心理RAG系统已启动")
     print(f"模型: {settings.CHAT_MODEL}")

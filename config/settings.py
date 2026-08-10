@@ -86,6 +86,25 @@ class Settings:
     )  # 危机关键词 + 等级 + 热线定义文件
     SAFETY_CHECK_ENABLED = os.getenv("SAFETY_CHECK_ENABLED", "true").lower() == "true"  # 是否启用关键词级危机检测
 
+    # 语义危机检测（L1：高危意图原型距离）
+    # 隐喻表达无限但危险意图有限：种子集（config/high_risk_intents.json）embed 后按意图簇
+    # 聚合成原型向量，用户问题与原型算余弦距离 —— 复用检索阶段的 embedding（带缓存），
+    # 不引入额外 API 成本。距离 ≤ 拦截半径 → 高危；≤ 灰区半径 → 疑似（附关怀，不拦截）。
+    SEMANTIC_CHECK_ENABLED = os.getenv("SEMANTIC_CHECK_ENABLED", "true").lower() == "true"
+    CRISIS_SEED_FILE = _resolve_path(
+        os.getenv("CRISIS_SEED_FILE", "config/high_risk_intents.json"),
+        _PROJECT_ROOT,
+    )  # 高危意图标注种子集（标准句 + 隐喻变体）
+    CRISIS_PROTOTYPE_CACHE = _resolve_path(
+        os.getenv("CRISIS_PROTOTYPE_CACHE", "data/crisis_prototypes.json"),
+        _PROJECT_ROOT,
+    )  # 原型向量缓存文件（种子文件未变更时直接复用，避免启动重建）
+    CRISIS_INTERCEPT_DIST = float(os.getenv("CRISIS_INTERCEPT_DIST", "0.25"))  # 到最近锚点距离 ≤ 此值 → 高危拦截（锚点集合方案实测：高危隐喻 0.20~0.24、负例最近 0.285，留缓冲防边界波动）
+    CRISIS_GRAY_DIST = float(os.getenv("CRISIS_GRAY_DIST", "0.36"))  # 距离介于拦截值与灰区值之间 → 疑似（附关怀 + 转介，不拦截）；0.36 可放行"孩子发脾气/说谎"类远邻误报
+
+    # embedding 进程内缓存（同一问题的向量在检测器与检索间复用，减少 API 调用）
+    EMBED_CACHE_SIZE = int(os.getenv("EMBED_CACHE_SIZE", "2048"))
+
     # 限流（仅 POST /api/query，内存级；多进程部署需改用共享存储）
     RATE_LIMIT_TIMES = int(os.getenv("RATE_LIMIT_TIMES", "20"))  # 时间窗内单客户端最大请求数
     RATE_LIMIT_SECONDS = int(os.getenv("RATE_LIMIT_SECONDS", "60"))  # 限流时间窗长度（秒）

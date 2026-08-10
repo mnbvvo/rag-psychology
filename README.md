@@ -159,14 +159,25 @@ Start-Process http://127.0.0.1:8000/
 
 ## 安全与危机干预
 
-`modules/safety_checker.py` 在每次问答前做关键词检测（可用 `.env` 的 `SAFETY_CHECK_ENABLED` 关闭）：
+`modules/safety_checker.py` 在每次问答前做**两级检测**（`SAFETY_CHECK_ENABLED` 总开关）：
 
-- 命中后判定 `high` / `medium` / `low` / `none`，关键词与等级定义在 `config/crisis_keywords.json`。
-- **高危**：直接返回危机干预提示与热线（如 110/120），不再走常规回答。
-- **中/低危**：正常检索回答，末尾附 `safety_note` 关怀提示与求助热线。
-- 热线号码来自 `config/crisis_keywords.json` 的 `hotlines` 字段，可按需补充。
+**L0 关键词快检**（`check_text`，毫秒级）：关键词与等级定义在 `config/crisis_keywords.json`，命中后判定 `high` / `medium` / `low` / `none`。命中 high 但属**求助型提问**（孩子/朋友等称谓 + 怎么办/帮助等动作词，如"孩子有自伤倾向怎么办"）时自动降级为 medium，避免把家长/老师的求助误当成危机实施者拦截。
 
-> ⚠️ 这是**原型级**防护：基于关键词，存在漏判与误判，不能替代专业心理危机干预。真实场景需引入更可靠的风险识别、人工审核与升级机制。
+**L1 语义检测**（`semantic_check`，高危意图锚点距离）：隐喻/隐晦表达（如"想用脑袋和房梁比赛"=上吊）字面无关键词，靠关键词必然漏报。L1 把种子集（`config/high_risk_intents.json`，标准意图句 + 隐喻变体，覆盖自杀/自伤/伤害他人/被伤害四簇）embed 后作为**锚点集合**（簇内保留每条句子向量，非均值原型），用户问题与所有锚点算余弦距离、取最近：
+
+- 距离 ≤ `CRISIS_INTERCEPT_DIST`（默认 0.25）→ 高危拦截；
+- 距离 ≤ `CRISIS_GRAY_DIST`（默认 0.36）→ 疑似，附关怀 + 转介（不拦截）；
+- 其余 → 放行。
+
+embedding 复用检索阶段的那次 API 调用（`EMBED_CACHE_SIZE` 进程内 LRU 缓存），**不增加额外 API 成本**。锚点向量缓存到 `data/crisis_prototypes.json`，种子文件变更自动重建；启动时后台预热，未就绪时问答自动回退关键词（不阻塞）。
+
+**回答侧复查**（`review_answer`）：LLM 生成的回答也会跑一遍 L0 关键词复查，命中高危时在末尾**追加**安全提醒（不替换原文——正常科普回答常含敏感词），并以 `detect_method=answer_check` 记入审计。
+
+**响应**：高危直接返回危机干预提示与热线（不再走常规回答）；中/低危正常检索回答，末尾附 `safety_note` 关怀提示与求助热线。热线号码来自 `config/crisis_keywords.json` 的 `hotlines` 字段。所有命中（含"疑似但未拦截"的灰区）写入 `crisis_audit` 表，并记录 `detect_method`（keyword/semantic）与 `confidence`（语义距离），审计可追溯检测来源。
+
+**阈值标定**：`python scripts/calibrate_crisis_thresholds.py --top 5` 对种子集正例 + 内置负例计算距离分布，输出建议阈值（实测正例 0.095~0.321、负例 0.339+，两组完全分离）。新增的隐喻表达请回填 `high_risk_intents.json` 的 `variants`，召回率随积累单调上升。
+
+> ⚠️ 这是**原型级**防护：关键词 + 语义原型无法 100% 识别所有隐晦危机表达（灰区误报/漏报依然存在），不能替代专业心理危机干预。真实场景需引入 LLM 精判、人工审核与升级机制。
 
 ## 知识库数据格式
 

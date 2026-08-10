@@ -134,8 +134,14 @@ def log_crisis(
     question: str,
     response: str | None,
     is_crisis_response: bool = False,
+    detect_method: str | None = None,
+    confidence: float | None = None,
 ) -> None:
-    """记录一次危机命中（合规审计，可追溯）。"""
+    """记录一次危机命中（合规审计，可追溯）。
+
+    detect_method：keyword / semantic / keyword+semantic，追溯检测来源；
+    confidence：语义距离（越小越贴近高危意图原型），关键词命中时为 None。
+    """
     try:
         kw_text = json.dumps(keywords_found, ensure_ascii=False) if keywords_found else None
     except (TypeError, ValueError):
@@ -148,6 +154,8 @@ def log_crisis(
             question=question,
             response=response,
             is_crisis_response=bool(is_crisis_response),
+            detect_method=detect_method,
+            confidence=confidence,
         )
     )
 
