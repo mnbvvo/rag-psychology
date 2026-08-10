@@ -13,6 +13,9 @@ from typing import Dict, List, Optional, Union
 # 避免超长问题刷屏，日志里只截取前 48 个字符
 _Q_PREVIEW = 48
 
+# 危机等级排序（多轮检测取最高等级用）
+_LEVEL_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3}
+
 
 def _log_query_timings(question: str, timings: Dict, source_count: int):
     """统一打印一次 /api/query 的分阶段耗时（后台 print，便于定位瓶颈）。"""
@@ -99,15 +102,26 @@ class PsychologyRAGSystem:
         timings: Dict[str, float] = {}
         t0 = time.perf_counter()
 
-        # 安全检查（基于当前问题）：L0 关键词 + L1 语义（高危意图原型距离）。
+        # 安全检查（基于当前问题）：L0 关键词 + L1 语义（高危意图锚点距离）。
         # 语义层复用本向量库的 embedding（带缓存），与检索共用同一次 API 调用。
+        #
+        # 多轮兜底：不只看最后一条 human —— 用户可能在某一轮暴露危机信号、
+        # 下一轮用指代句（"那该怎么办"）继续，只查最后一条会漏。
+        # 对全部 human 轮次逐一检测，取最高等级作为本轮判定（历史高危同样拦截）。
         if check_safety:
             ts = time.perf_counter()
-            safety_result = self.safety_checker.check_full(
-                current_question,
-                embed_query_fn=self.vectorstore.embeddings.embed_query,
-                embed_documents_fn=self.vectorstore.embeddings.embed_documents,
-            )
+            emb_query_fn = self.vectorstore.embeddings.embed_query
+            emb_docs_fn = self.vectorstore.embeddings.embed_documents
+            safety_result = self.safety_checker.check_full(current_question, emb_query_fn, emb_docs_fn)
+            for m in norm_messages:
+                if m["role"] != "human" or m["content"] == current_question:
+                    continue
+                try:
+                    r = self.safety_checker.check_full(m["content"], emb_query_fn, emb_docs_fn)
+                except Exception:
+                    continue  # 单轮检测异常不影响主流程
+                if _LEVEL_RANK.get(r.get("level"), 0) > _LEVEL_RANK.get(safety_result.get("level"), 0):
+                    safety_result = r
             timings["safety"] = (time.perf_counter() - ts) * 1000
             result["safety_check"] = safety_result
             # 高危：直接返回危机响应，不走检索与生成

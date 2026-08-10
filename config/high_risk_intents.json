@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "高危意图标注种子集（seed corpus）。它不是一个穷举隐喻的检测器，而是给有限几个『危险意图簇』提供语义锚点：每条 intent 是标准意图句，variants 是隐喻/口语变体。embedding 后按簇聚合为原型向量，检测时判断『用户问题离哪个意图簇有多近』——泛化由 embedding 完成，未收录的表达也会落在对应意图簇附近。新发现的真实表达请回填 variants，让召回率随积累单调上升。",
+  "note": "高危意图标注种子集（seed corpus）。它不是一个穷举隐喻的检测器，而是给有限几个『危险意图簇』提供语义锚点：每条 intent 是标准意图句，variants 是隐喻/口语变体。embedding 后按簇保留为锚点向量集合，检测时判断『用户问题离哪个意图簇最近』——泛化由 embedding 完成，未收录的表达也会落在对应意图簇附近。新发现的真实表达请回填 variants，让召回率随积累单调上升。",
   "clusters": {
     "suicide":     { "level": "high",   "label": "自杀意图" },
     "self_harm":   { "level": "high",   "label": "自伤意图" },
@@ -12,7 +12,7 @@
       "cluster": "suicide",
       "person": "self",
       "intent": "我想自杀，结束自己的生命",
-      "variants": ["我不想活了", "我想去死", "我活着没有意义", "我想离开这个世界"]
+      "variants": ["我不想活了", "我想去死", "我活着没有意义", "我想离开这个世界", "我想结束这一切"]
     },
     {
       "cluster": "suicide",
@@ -24,7 +24,7 @@
       "cluster": "suicide",
       "person": "self",
       "intent": "我想从高处跳下去自杀",
-      "variants": ["我想从楼上飞下去", "我想变成一朵坠落的云", "站在天台边缘想往下跳", "想从窗口一跃而下"]
+      "variants": ["我想从楼上飞下去", "我想变成一朵坠落的云", "站在天台边缘想往下跳", "想从窗口一跃而下", "想从天桥跳下去", "想站在楼顶迈出那一步"]
     },
     {
       "cluster": "suicide",
@@ -41,6 +41,48 @@
     {
       "cluster": "suicide",
       "person": "self",
+      "intent": "我想割腕自杀",
+      "variants": ["想在手腕上划开一道口子", "想割开自己的手腕", "想看着血从手腕流出来", "想在手腕上画一道深深的红色记号"]
+    },
+    {
+      "cluster": "suicide",
+      "person": "self",
+      "intent": "我想跳河淹死自己",
+      "variants": ["想走进水里再也不回头", "想让河水把我带走", "想沉下去不浮上来", "想游到河中间让水没过我"]
+    },
+    {
+      "cluster": "suicide",
+      "person": "self",
+      "intent": "我想卧轨结束生命",
+      "variants": ["想躺在铁轨上", "想让火车从我身上碾过去", "想冲进铁轨", "想站在火车前面"]
+    },
+    {
+      "cluster": "suicide",
+      "person": "self",
+      "intent": "我想用煤气或烧炭结束生命",
+      "variants": ["想关紧门窗烧炭", "想开煤气让屋子里充满煤气", "想吸一氧化碳", "想用煤气味把我带走"]
+    },
+    {
+      "cluster": "suicide",
+      "person": "self",
+      "intent": "我想触电结束生命",
+      "variants": ["想摸高压电", "想把手伸进插座", "想用触电让自己安静下来"]
+    },
+    {
+      "cluster": "suicide",
+      "person": "self",
+      "intent": "我想窒息结束生命",
+      "variants": ["想捂死自己", "想用塑料袋套住头", "想把自己憋死", "想让呼吸停下来"]
+    },
+    {
+      "cluster": "suicide",
+      "person": "self",
+      "intent": "我想用撞车结束生命",
+      "variants": ["想冲向迎面来的大卡车", "想迎着车流冲出去", "想被车撞死", "想从高速路冲下去"]
+    },
+    {
+      "cluster": "suicide",
+      "person": "self",
       "intent": "我想让一切痛苦结束，一了百了",
       "variants": ["我想解脱了", "想彻底消失", "想从这个世界蒸发", "想退出这场游戏", "想给所有人留下清净"]
     },
@@ -49,12 +91,6 @@
       "person": "self",
       "intent": "我想去找已经去世的亲人",
       "variants": ["我想去找奶奶了", "想变成天上的星星看着大家", "想和爷爷团聚", "想去那个没有痛苦的地方"]
-    },
-    {
-      "cluster": "suicide",
-      "person": "self",
-      "intent": "我想跳河淹死自己",
-      "variants": ["想走进水里再也不回头", "想让河水把我带走", "想沉下去不浮上来"]
     },
     {
       "cluster": "suicide",
@@ -78,13 +114,37 @@
       "cluster": "self_harm",
       "person": "self",
       "intent": "我想用头撞墙",
-      "variants": ["想用头撞墙让自己清醒一下", "想把头往墙上磕"]
+      "variants": ["想用头撞墙让自己清醒一下", "想把头往墙上磕", "想用额头砸墙"]
     },
     {
       "cluster": "self_harm",
       "person": "self",
       "intent": "我想烫伤自己",
-      "variants": ["想用打火机烫自己的皮肤", "想用烟头烫自己"]
+      "variants": ["想用打火机烫自己的皮肤", "想用烟头烫自己", "想用热水烫自己"]
+    },
+    {
+      "cluster": "self_harm",
+      "person": "self",
+      "intent": "我想抓伤或挠伤自己",
+      "variants": ["想用手抓破自己的皮肤", "想挠自己挠出血", "想把皮肤抓烂", "想在自己身上抓出痕迹"]
+    },
+    {
+      "cluster": "self_harm",
+      "person": "self",
+      "intent": "我想咬伤自己",
+      "variants": ["想咬自己的手咬出血", "想狠狠咬自己一口", "想咬嘴唇咬到破"]
+    },
+    {
+      "cluster": "self_harm",
+      "person": "self",
+      "intent": "我想用力敲打自己",
+      "variants": ["想用拳头捶自己的头", "想扇自己耳光", "想打自己的脸", "想用拳头砸自己的腿"]
+    },
+    {
+      "cluster": "self_harm",
+      "person": "self",
+      "intent": "我想拔自己的头发",
+      "variants": ["想把自己头发一把把扯下来", "想扯头发扯到疼", "想拔掉一把头发"]
     },
     {
       "cluster": "self_harm",
@@ -108,7 +168,25 @@
       "cluster": "harm_others",
       "person": "self",
       "intent": "我想用暴力攻击伤害我的人",
-      "variants": ["想冲上去打他", "想拿刀捅他", "想用暴力还击"]
+      "variants": ["想冲上去打他", "想拿刀捅他", "想用暴力还击", "想把他按在地上打"]
+    },
+    {
+      "cluster": "harm_others",
+      "person": "self",
+      "intent": "我想在学校里施暴",
+      "variants": ["想在学校里打人", "想找几个人揍他一顿", "想在厕所里堵住他打", "想让全校都怕我"]
+    },
+    {
+      "cluster": "harm_others",
+      "person": "self",
+      "intent": "我想报复所有人",
+      "variants": ["想让所有人都付出代价", "想报复这个社会", "想毁掉一切", "想让他们都后悔"]
+    },
+    {
+      "cluster": "harm_others",
+      "person": "self",
+      "intent": "我想杀了别人再自杀",
+      "variants": ["想拉着他们一起死", "想同归于尽", "想先杀了他再自我了断", "想带几个人一起走"]
     },
     {
       "cluster": "being_harmed",
@@ -120,31 +198,67 @@
       "cluster": "being_harmed",
       "person": "proxy",
       "intent": "我被家人暴力对待",
-      "variants": ["我爸妈打我骂我", "我在家里被打", "我在被家暴", "家里人经常动手打我"]
+      "variants": ["我爸妈打我骂我", "我在家里被打", "我在被家暴", "家里人经常动手打我", "我挨打了不敢说"]
     },
     {
       "cluster": "being_harmed",
       "person": "proxy",
       "intent": "我在学校被人霸凌",
-      "variants": ["我在学校被同学霸凌", "同学们都欺负我", "我被关在厕所里欺负", "我被同学勒索"]
+      "variants": ["我在学校被同学霸凌", "同学们都欺负我", "我被关在厕所里欺负", "我被同学勒索", "他们天天找我麻烦"]
+    },
+    {
+      "cluster": "being_harmed",
+      "person": "proxy",
+      "intent": "我在学校被孤立排挤",
+      "variants": ["全班都不理我", "我被孤立了", "没有人愿意和我玩", "他们都躲着我", "我成了大家的笑话"]
     },
     {
       "cluster": "being_harmed",
       "person": "proxy",
       "intent": "我被人威胁恐吓",
-      "variants": ["有人威胁我不许说出去", "我被恐吓了", "有人拿刀威胁我"]
+      "variants": ["有人威胁我不许说出去", "我被恐吓了", "有人拿刀威胁我", "他们说不听话就打我"]
     },
     {
       "cluster": "being_harmed",
       "person": "proxy",
       "intent": "我被人性侵或猥亵",
-      "variants": ["有人对我做了不好的事", "我被侵犯了", "有人强迫我做那种事"]
+      "variants": ["有人对我做了不好的事", "我被侵犯了", "有人强迫我做那种事", "有人对我动手动脚"]
+    },
+    {
+      "cluster": "being_harmed",
+      "person": "proxy",
+      "intent": "我被人性骚扰",
+      "variants": ["有人偷拍我", "我被人跟踪骚扰", "有人给我发骚扰信息", "有人一直纠缠我"]
+    },
+    {
+      "cluster": "being_harmed",
+      "person": "proxy",
+      "intent": "我在网上被人霸凌",
+      "variants": ["我在网上被人骂得很惨", "有人在网上造谣我", "我的照片被发到网上羞辱", "我被网暴了", "他们建群骂我"]
     },
     {
       "cluster": "being_harmed",
       "person": "proxy",
       "intent": "我被关起来不让离开",
       "variants": ["我被锁在家里出不去", "有人不让我出门", "我被囚禁了"]
+    },
+    {
+      "cluster": "being_harmed",
+      "person": "proxy",
+      "intent": "我被强迫做不想做的事",
+      "variants": ["有人逼我做我不愿意的事", "我被强迫拍照", "他们威胁我不做就伤害我", "我不敢拒绝他们"]
+    },
+    {
+      "cluster": "being_harmed",
+      "person": "proxy",
+      "intent": "我被家人忽视或虐待",
+      "variants": ["家里没人管我", "我经常被饿着", "我被关在门外", "大人从不关心我", "我在家像个透明人"]
+    },
+    {
+      "cluster": "being_harmed",
+      "person": "proxy",
+      "intent": "我被精神控制",
+      "variants": ["有人一直贬低我让我觉得自己很没用", "我被PUA了", "有人操控我的情绪", "他说我离开他就活不下去", "我被他拿捏得死死的"]
     }
   ]
 }

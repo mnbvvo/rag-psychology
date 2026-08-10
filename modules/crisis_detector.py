@@ -59,7 +59,13 @@ class SemanticCrisisDetector:
             if not self._cache_file.is_file():
                 return False
             data = json.loads(self._cache_file.read_text(encoding="utf-8"))
-            if data.get("format") != 2 or data.get("seed_mtime") != self._seed_mtime():
+            # 校验 embedding_model：换 embedding 模型后向量空间完全不同，
+            # 旧锚点会静默失效（与 Chroma 换模型须 --reset 同理），必须重建
+            if (
+                data.get("format") != 2
+                or data.get("embedding_model") != settings.EMBEDDING_MODEL
+                or data.get("seed_mtime") != self._seed_mtime()
+            ):
                 return False
             self._prototypes = {
                 cid: {
@@ -124,6 +130,7 @@ class SemanticCrisisDetector:
             self._cache_file.write_text(
                 json.dumps({
                     "format": 2,
+                    "embedding_model": settings.EMBEDDING_MODEL,
                     "seed_mtime": self._seed_mtime(),
                     "prototypes": {
                         cid: {

@@ -116,6 +116,10 @@ class QueryRequest(BaseModel):
                     raise ValueError(f"messages[{i}] 必须包含 role 和 content")
                 if m["role"] not in ("human", "ai", "user", "assistant"):
                     raise ValueError(f"messages[{i}].role 必须是 human/ai/user/assistant 之一")
+                if not isinstance(m["content"], str) or not m["content"].strip():
+                    raise ValueError(f"messages[{i}].content 不能为空")
+                if len(m["content"]) > 4000:
+                    raise ValueError(f"messages[{i}].content 超长（最多 4000 字符）")
         return self
 
 
