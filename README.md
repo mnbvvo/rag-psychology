@@ -223,7 +223,7 @@ set HF_ENDPOINT=https://hf-mirror.com
 huggingface-cli download BAAI/bge-reranker-v2-m3 --local-dir "data/rerank_models/bge-reranker-v2-m3"
 ```
 
-依赖：`sentence-transformers` + torch（有 NVIDIA GPU 建议装 CUDA 版：`pip install torch --index-url https://download.pytorch.org/whl/cu124`，重排从秒级降到几十毫秒）。相关配置见 `.env.example`：`RERANK_ENABLED` / `RERANK_MODEL` / `RERANK_DEVICE` / `RERANK_BATCH_SIZE` / `RERANK_MAX_LENGTH` / `RERANK_MIN_SCORE`（可选最低分数护栏，默认 0=不启用；bge 分数 0~1，本项目实测相关约 0.4+、无关 <0.15，建议 0.2~0.3 起试；低于阈值的候选被丢弃，全部丢弃时回答会提示"没有足够信息"防编造）。
+依赖：`sentence-transformers` + torch（有 NVIDIA GPU 建议装 CUDA 版：`pip install torch --index-url https://download.pytorch.org/whl/cu124`，重排从秒级降到几十毫秒）。相关配置见 `config/settings.py` 的「本地重排序」一节：`RERANK_ENABLED` / `RERANK_MODEL` / `RERANK_DEVICE` / `RERANK_BATCH_SIZE` / `RERANK_MAX_LENGTH` / `RERANK_MIN_SCORE`（可选最低分数护栏，默认 0=不启用；bge 分数 0~1，本项目实测相关约 0.4+、无关 <0.15，建议 0.2~0.3 起试；低于阈值的候选被丢弃，全部丢弃时回答会提示"没有足够信息"防编造）。
 
 ## 本地向量库
 
@@ -245,8 +245,8 @@ huggingface-cli download BAAI/bge-reranker-v2-m3 --local-dir "data/rerank_models
 
 | 配置项 | 位置 | 默认值 | 说明 |
 |---|---|---|---|
-| `DB_PATH` | `config/settings.py` / `.env` | `data/rag_psychology.sqlite3` | 库文件相对项目根的路径 |
-| `DB_URL` | `config/settings.py` / `.env` | `sqlite:///<DB_PATH>` | SQLAlchemy 连接串 |
+| `DB_PATH` | `config/settings.py` | `data/rag_psychology.sqlite3` | 库文件相对项目根的路径 |
+| `DB_URL` | `config/settings.py` | `sqlite:///<DB_PATH>` | SQLAlchemy 连接串 |
 
 > 文件后缀曾为 `.db`，后统一改为 `.sqlite3`（两者格式完全相同，仅命名习惯）。`.gitignore` 已忽略整个 `data/` 目录（同时覆盖 `data/chroma/` 向量库与 `*.db`/`*.sqlite3` 关系库），两库均不会被提交；备份请用 `data/` 整体拷贝。
 

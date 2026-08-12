@@ -102,6 +102,12 @@ class PsychologyRAGSystem:
         timings: Dict[str, float] = {}
         t0 = time.perf_counter()
 
+        # 重置 embedding 真实耗时累计：语义检测对问题的首次向量化（真实 API 调用）
+        # 会拆到 timings["embed"]，而非全算进"安全"栏 —— 否则检索阶段命中缓存
+        # （≈0ms）会把"最后一次调用耗时"覆盖成 0，前端"嵌入"栏一直显示 0ms。
+        from modules.vector_store import reset_embed_timer, get_embed_ms
+        reset_embed_timer()
+
         # 安全检查（基于当前问题）：L0 关键词 + L1 语义（高危意图锚点距离）。
         # 语义层复用本向量库的 embedding（带缓存），与检索共用同一次 API 调用。
         #
@@ -122,7 +128,11 @@ class PsychologyRAGSystem:
                     continue  # 单轮检测异常不影响主流程
                 if _LEVEL_RANK.get(r.get("level"), 0) > _LEVEL_RANK.get(safety_result.get("level"), 0):
                     safety_result = r
-            timings["safety"] = (time.perf_counter() - ts) * 1000
+            # 安全墙钟包含真实 embed 的 API 延迟：把 embed 耗时拆到独立"嵌入"栏，
+            # 安全栏只保留关键词比对 + 原型距离计算的纯计算耗时，两栏不重复计。
+            embed_ms = get_embed_ms()
+            timings["embed"] = embed_ms
+            timings["safety"] = max(0.0, (time.perf_counter() - ts) * 1000 - embed_ms)
             result["safety_check"] = safety_result
             # 高危：直接返回危机响应，不走检索与生成
             if safety_result.get("is_crisis") and safety_result["level"] == "high":

@@ -94,7 +94,6 @@ function renderTimings(timings, elapsed) {
   if (!timings && elapsed == null) return "";
   const parts = [];
   if (timings) {
-    parts.push(`安全 ${formatMs(timings.safety)}`);
     parts.push(`嵌入 ${formatMs(timings.embed)}`);
     parts.push(`检索 ${formatMs(timings.retrieve)}`);
     if (timings.hybrid != null) parts.push(`混合 ${formatMs(timings.hybrid)}`);

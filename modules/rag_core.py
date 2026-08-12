@@ -55,12 +55,13 @@ class PsychologyRAG:
         启用本地重排（RERANK_ENABLED）时：召回候选集 → Cross-Encoder 精排取 top3；
         重排失败自动回退到「按向量分数排序截断」的原逻辑，保证可用性。
         """
-        from modules.vector_store import get_last_embed_ms
+        from modules.vector_store import get_embed_ms
 
         filter_dict = None  # 年龄分桶过滤已移除（age_group 元数据保留在库中，检索不再按年龄过滤）
         rerank_enabled = settings.RERANK_ENABLED
 
         t0 = time.perf_counter()
+        embed_before = get_embed_ms()  # retrieve 窗口起点：用于拆分本窗口内真实 embedding 耗时
         if settings.SEARCH_TYPE == "mmr":
             # 重排开启时用 MMR 产出更多候选（多样性），交给重排精排；否则保持原 top_k 行为
             mmr_k = settings.FETCH_K if rerank_enabled else settings.RERANK_TOP_K
@@ -129,13 +130,23 @@ class PsychologyRAG:
                 else:
                     docs = docs[: settings.RERANK_TOP_K]
 
-        # 拆分 embed / retrieve / rerank：检索总耗时 - embedding - 重排
+        # 拆分 embed / retrieve / hybrid / rerank：
+        # - embed：本 retrieve 窗口内「真实调用 embedding API」的耗时增量
+        #   （结束时累计 - 开始时累计）。正常流程下问题向量已在安全阶段 embed
+        #   并被缓存，检索阶段命中缓存不计时 → 显示 0ms 是真实语义；若未走
+        #   prepare（直接调 retrieve），本窗口的真实 embed 会被这里兜底记上。
+        # - retrieve：检索总耗时 - 本窗口 embed 增量 - 混合 - 重排，四栏相加
+        #   与总墙钟一致，便于按耗时定位瓶颈。
         search_total_ms = (time.perf_counter() - t0) * 1000
-        embed_ms = get_last_embed_ms()
+        embed_in_retrieve = max(0.0, get_embed_ms() - embed_before)
         rerank_ms = (timings.get("rerank", 0) if timings else 0) or 0
-        retrieve_ms = max(0.0, search_total_ms - embed_ms - rerank_ms)
+        hybrid_ms = (timings.get("hybrid", 0) if timings else 0) or 0
+        retrieve_ms = max(0.0, search_total_ms - embed_in_retrieve - rerank_ms - hybrid_ms)
         if timings is not None:
-            timings["embed"] = embed_ms
+            # prepare() 已把安全阶段的真实 embed 写入 timings["embed"]，保留之；
+            # 仅在未被写入（直接调 retrieve 的路径）时用本窗口增量兜底。
+            if "embed" not in timings:
+                timings["embed"] = embed_in_retrieve
             timings["retrieve"] = retrieve_ms
 
         return docs

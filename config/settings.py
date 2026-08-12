@@ -1,5 +1,12 @@
 """
 系统配置管理
+
+配置分层原则：
+- .env 只放「部署环境相关」的三项：OPENAI_API_KEY / OPENAI_API_BASE / CHAT_MODEL。
+- 其余所有调参（检索 / 重排 / 安全 / 限流 / 服务等）都是这里的静态常量，
+  改配置直接改本文件（含中文注释），不依赖环境变量。
+
+路径类配置统一经 _resolve_path 锚定到项目根目录，避免 cwd 不同导致找不到文件。
 """
 import os
 from pathlib import Path
@@ -29,103 +36,82 @@ def _resolve_path(value: str, base: Path) -> str:
 class Settings:
     """系统配置类"""
 
-    # 接口与密钥（密钥为必填，写在 .env；base 地址随部署环境覆盖）
+    # ============ 接口与模型（唯一从 .env 读取的部分） ============
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")  # 必填：OpenAI 兼容接口密钥
     OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")  # 兼容模式基地址
+    CHAT_MODEL = os.getenv("CHAT_MODEL", "qwen3.6-flash")  # 对话生成模型
 
-    # 模型配置（更换模型/部署环境时在 .env 覆盖；不填则用下列默认值）
-    CHAT_MODEL = os.getenv("CHAT_MODEL", "qwen3.5-35b-a3b")  # 对话生成模型
-    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v3")  # 向量化模型（与向量库绑定，换模型须 --reset 重导）
+    # 向量化模型（与向量库绑定：换模型后旧向量静默失效，必须 --reset 重导）
+    EMBEDDING_MODEL = "text-embedding-v3"
 
     # 思考/推理模式（仅部分 OpenAI 兼容模型支持，如 Qwen3 / DeepSeek；端点不支持时请把下面的值改为 False，否则可能报 400）
-    ENABLE_THINKING = False  # 是否在请求体注入 enable_thinking 控制思考模式
+    ENABLE_THINKING = True  # 是否在请求体注入 enable_thinking 控制思考模式
 
-    # RAG 配置（路径锚定到项目根目录，避免 cwd 不同导致找不到文件/库）
-    CHROMA_PERSIST_DIR = _resolve_path(
-        os.getenv("CHROMA_PERSIST_DIR", "data/chroma"),
-        _PROJECT_ROOT,
-    )  # 本地向量库持久化目录（统一收在 data/ 下）
-    COLLECTION_NAME = os.getenv("COLLECTION_NAME", "psychology_knowledge")  # Chroma 集合名
-    RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "3"))  # 最终喂给模型/展示的来源条数（similarity 与 mmr 两模式统一使用此值）
+    # ============ RAG 检索（路径锚定到项目根目录，避免 cwd 不同导致找不到文件/库） ============
+    CHROMA_PERSIST_DIR = _resolve_path("data/chroma", _PROJECT_ROOT)  # 本地向量库持久化目录（统一收在 data/ 下）
+    COLLECTION_NAME = "psychology_knowledge"  # Chroma 集合名
+    RERANK_TOP_K = 3  # 最终喂给模型/展示的来源条数（similarity 与 mmr 两模式统一使用此值）
+    FETCH_K = 10  # 相似度检索初召回候选数（应 >= RERANK_TOP_K，即最终条数）
+    SEARCH_TYPE = "similarity"  # similarity 或 mmr（最大边际相关，兼顾多样性）
+    MMR_LAMBDA = 0.5  # mmr 模式下多样性权重：0=最多样，1=最相关
+    MIN_RELEVANCE_SCORE = 0.2  # 相关性下限，0=不启用（建议 0.2~0.35；仅未开重排时生效，重排开启时跳过该硬阈值）
 
-    # 检索策略
-    FETCH_K = int(os.getenv("FETCH_K", "10"))  # 相似度检索初召回候选数（应 >= RERANK_TOP_K，即最终条数）
-    SEARCH_TYPE = os.getenv("SEARCH_TYPE", "similarity")  # similarity 或 mmr（最大边际相关，兼顾多样性）
-    MMR_LAMBDA = float(os.getenv("MMR_LAMBDA", "0.5"))  # mmr 模式下多样性权重：0=最多样，1=最相关
-    MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.2"))  # 相关性下限，0=不启用（建议 0.2~0.35）
-
-    # 混合检索（向量召回 ∪ BM25 关键词召回 → 重排精排）
+    # ============ 混合检索（向量召回 ∪ BM25 关键词召回 → 重排精排） ============
     # 心理领域高频症状词（失眠/厌学/霸凌等）词面命中比语义匹配更可靠；
     # 与重排配合：多路召回取并集去重，由重排器统一精排，无需分数融合。
-    HYBRID_ENABLED = os.getenv("HYBRID_ENABLED", "true").lower() == "true"  # 是否启用混合检索（仅重排开启时生效）
-    HYBRID_KEYWORD_K = int(os.getenv("HYBRID_KEYWORD_K", "5"))  # 关键词（BM25）召回条数，并入向量候选后交给重排器
+    HYBRID_ENABLED = True  # 是否启用混合检索（仅重排开启时生效）
+    HYBRID_KEYWORD_K = 5  # 关键词（BM25）召回条数，并入向量候选后交给重排器
 
-    # 本地重排序（Cross-Encoder，bge-reranker-v2-m3）
+    # ============ 本地重排序（Cross-Encoder，bge-reranker-v2-m3） ============
     # 召回候选后按「问题 × 文档」逐对打分精排，替代仅按向量分数截断的假重排。
     # 模型失败/异常时自动回退到原排序逻辑，不影响检索可用性。
-    RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"  # 是否启用本地重排
-    RERANK_MODEL = os.getenv(
-        "RERANK_MODEL",
-        _resolve_path("data/rerank_models/bge-reranker-v2-m3", _PROJECT_ROOT),
-    )  # 本地模型目录（含 config.json/model.safetensors），也支持 HF 模型名
-    RERANK_DEVICE = os.getenv("RERANK_DEVICE", "")  # 留空=自动（优先 cuda），可显式 cuda/cpu
-    RERANK_BATCH_SIZE = int(os.getenv("RERANK_BATCH_SIZE", "8"))  # 每批重排文档数
-    RERANK_MAX_LENGTH = int(os.getenv("RERANK_MAX_LENGTH", "512"))  # 单条文本截断长度（token）
-    RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "0"))  # 重排分数下限（bge 分数 0~1；本项目实测相关文档约 0.4+、无关 <0.15，建议从 0.2~0.3 起试，勿设太高否则全部过滤）；0=不启用。低于阈值的候选被丢弃，全被丢弃时回答会提示"没有足够信息"防编造
+    RERANK_ENABLED = True  # 是否启用本地重排
+    RERANK_MODEL = _resolve_path("data/rerank_models/bge-reranker-v2-m3", _PROJECT_ROOT)  # 本地模型目录（含 config.json/model.safetensors），也支持 HF 模型名
+    RERANK_DEVICE = ""  # 留空=自动（优先 cuda），可显式 cuda/cpu
+    RERANK_BATCH_SIZE = 8  # 每批重排文档数
+    RERANK_MAX_LENGTH = 512  # 单条文本截断长度（token）
+    RERANK_MIN_SCORE = 0  # 重排分数下限（bge 分数 0~1；本项目实测相关文档约 0.4+、无关 <0.15，建议从 0.2~0.3 起试，勿设太高否则全部过滤）；0=不启用。低于阈值的候选被丢弃，全被丢弃时回答会提示"没有足够信息"防编造
 
-    # 生成参数
-    CHAT_TEMPERATURE = float(os.getenv("CHAT_TEMPERATURE", "0.3"))  # 生成温度，事实/建议类问答偏低以减少幻觉
+    # ============ 生成参数 ============
+    CHAT_TEMPERATURE = 0.3  # 生成温度，事实/建议类问答偏低以减少幻觉
 
-    # 多轮对话记忆
-    MAX_HISTORY_TURNS = int(os.getenv("MAX_HISTORY_TURNS", "5"))  # 保留最近多少轮对话；超过则对更早的历史做摘要压缩
+    # ============ 多轮对话记忆 ============
+    MAX_HISTORY_TURNS = 5  # 保留最近多少轮对话；超过则对更早的历史做摘要压缩
 
-    # 安全配置（路径锚定到项目根目录，避免 cwd 不同导致找不到文件）
-    CRISIS_KEYWORDS_FILE = _resolve_path(
-        os.getenv("CRISIS_KEYWORDS_FILE", "config/crisis_keywords.json"),
-        _PROJECT_ROOT,
-    )  # 危机关键词 + 等级 + 热线定义文件
-    SAFETY_CHECK_ENABLED = os.getenv("SAFETY_CHECK_ENABLED", "true").lower() == "true"  # 是否启用关键词级危机检测
+    # ============ 安全配置（路径锚定到项目根目录，避免 cwd 不同导致找不到文件） ============
+    CRISIS_KEYWORDS_FILE = _resolve_path("config/crisis_keywords.json", _PROJECT_ROOT)  # 危机关键词 + 等级 + 热线定义文件
+    SAFETY_CHECK_ENABLED = True  # 是否启用关键词级危机检测
 
     # 语义危机检测（L1：高危意图原型距离）
     # 隐喻表达无限但危险意图有限：种子集（config/high_risk_intents.json）embed 后按意图簇
     # 聚合成原型向量，用户问题与原型算余弦距离 —— 复用检索阶段的 embedding（带缓存），
     # 不引入额外 API 成本。距离 ≤ 拦截半径 → 高危；≤ 灰区半径 → 疑似（附关怀，不拦截）。
-    SEMANTIC_CHECK_ENABLED = os.getenv("SEMANTIC_CHECK_ENABLED", "true").lower() == "true"
-    CRISIS_SEED_FILE = _resolve_path(
-        os.getenv("CRISIS_SEED_FILE", "config/high_risk_intents.json"),
-        _PROJECT_ROOT,
-    )  # 高危意图标注种子集（标准句 + 隐喻变体）
-    CRISIS_PROTOTYPE_CACHE = _resolve_path(
-        os.getenv("CRISIS_PROTOTYPE_CACHE", "data/crisis_prototypes.json"),
-        _PROJECT_ROOT,
-    )  # 原型向量缓存文件（种子文件未变更时直接复用，避免启动重建）
-    CRISIS_INTERCEPT_DIST = float(os.getenv("CRISIS_INTERCEPT_DIST", "0.25"))  # 到最近锚点距离 ≤ 此值 → 高危拦截（锚点集合方案实测：高危隐喻 0.20~0.24、负例最近 0.285，留缓冲防边界波动）
-    CRISIS_GRAY_DIST = float(os.getenv("CRISIS_GRAY_DIST", "0.36"))  # 距离介于拦截值与灰区值之间 → 疑似（附关怀 + 转介，不拦截）；0.36 可放行"孩子发脾气/说谎"类远邻误报
+    SEMANTIC_CHECK_ENABLED = True
+    CRISIS_SEED_FILE = _resolve_path("config/high_risk_intents.json", _PROJECT_ROOT)  # 高危意图标注种子集（标准句 + 隐喻变体）
+    CRISIS_PROTOTYPE_CACHE = _resolve_path("data/crisis_prototypes.json", _PROJECT_ROOT)  # 原型向量缓存文件（种子文件未变更时直接复用，避免启动重建）
+    CRISIS_INTERCEPT_DIST = 0.25  # 到最近锚点距离 ≤ 此值 → 高危拦截（锚点集合方案实测：高危隐喻 0.20~0.24、负例最近 0.285，留缓冲防边界波动）
+    CRISIS_GRAY_DIST = 0.36  # 距离介于拦截值与灰区值之间 → 疑似（附关怀 + 转介，不拦截）；0.36 可放行"孩子发脾气/说谎"类远邻误报
 
     # embedding 进程内缓存（同一问题的向量在检测器与检索间复用，减少 API 调用）
-    EMBED_CACHE_SIZE = int(os.getenv("EMBED_CACHE_SIZE", "2048"))
+    EMBED_CACHE_SIZE = 2048
 
-    # 限流（仅 POST /api/query，内存级；多进程部署需改用共享存储）
-    RATE_LIMIT_TIMES = int(os.getenv("RATE_LIMIT_TIMES", "20"))  # 时间窗内单客户端最大请求数
-    RATE_LIMIT_SECONDS = int(os.getenv("RATE_LIMIT_SECONDS", "60"))  # 限流时间窗长度（秒）
+    # ============ 限流（仅 POST /api/query，内存级；多进程部署需改用共享存储） ============
+    RATE_LIMIT_TIMES = 20  # 时间窗内单客户端最大请求数
+    RATE_LIMIT_SECONDS = 60  # 限流时间窗长度（秒）
 
-    # 服务配置（心理应用含危机内容，默认只绑本机，避免暴露到局域网）
-    HOST = os.getenv("HOST", "127.0.0.1")  # 监听地址；切勿改为 0.0.0.0 以免暴露到局域网
-    PORT = int(os.getenv("PORT", "8000"))  # 监听端口
-    DEBUG = os.getenv("DEBUG", "false").lower() == "true"  # 调试模式（开启时 uvicorn --reload 且单进程）
+    # ============ 服务配置（心理应用含危机内容，默认只绑本机，避免暴露到局域网） ============
+    HOST = "127.0.0.1"  # 监听地址；切勿改为 0.0.0.0 以免暴露到局域网
+    PORT = 8000  # 监听端口
+    DEBUG = False  # 调试模式（开启时 uvicorn --reload 且单进程）
 
     # 跨域白名单（前端若独立部署 / 用 Vite 等开发服务器时需在此放行；
     # 默认由本服务同源托管前端，无需跨域；留空则仅允许本服务自身 origin，切勿用 "*"）
-    _env_cors = os.getenv("CORS_ORIGINS", "")
-    CORS_ORIGINS = [o.strip() for o in _env_cors.split(",") if o.strip()] or [
-        f"http://{HOST}:{PORT}",
-        f"http://localhost:{PORT}",
-    ]
+    CORS_ORIGINS = [f"http://{HOST}:{PORT}", f"http://localhost:{PORT}"]
 
-    # 关系型数据库（结构化持久化：会话 / 消息 / 危机审计；与向量库 Chroma 互补）
+    # ============ 关系型数据库（结构化持久化：会话 / 消息 / 危机审计；与向量库 Chroma 互补） ============
     # 默认 SQLite（单文件、零部署）；生产/多 worker 可改为 mysql+pymysql://user:pwd@host/db
-    _DB_PATH = _resolve_path(os.getenv("DB_PATH", "data/rag_psychology.sqlite3"), _PROJECT_ROOT)
-    DB_URL = os.getenv("DB_URL", f"sqlite:///{_DB_PATH.replace('\\', '/')}")
+    _DB_PATH = _resolve_path("data/rag_psychology.sqlite3", _PROJECT_ROOT)
+    DB_URL = f"sqlite:///{_DB_PATH.replace('\\', '/')}"
 
     # 项目根目录
     PROJECT_ROOT = _PROJECT_ROOT

@@ -11,7 +11,9 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from config.settings import settings
 
-# 线程隔离的 embedding 耗时存放区，供检索阶段拆分 embed/retrieve 耗时。
+# 线程隔离的 embedding 真实耗时累计区，供拆分 embed / retrieve / safety 耗时。
+# 只累计「真实调用 embedding API」的耗时（缓存命中≈0ms 不计），语义是：
+# 同一问题在安全阶段首次向量化是真实成本，检索阶段命中 LRU 缓存就是 0ms。
 _embed_tls = threading.local()
 
 # embedding 进程内 LRU 缓存：同一文本（如用户问题）在语义检测器与向量检索之间
@@ -20,14 +22,35 @@ _embed_cache: "OrderedDict[tuple, list]" = OrderedDict()
 _embed_cache_lock = threading.Lock()
 
 
-def _cached_embed(key: tuple, do_embed):
-    """按 (model, text) 缓存单条文本的向量；缓存满时淘汰最久未用项。"""
+def _record_embed_ms(ms: float) -> None:
+    """把一次真实 embedding API 调用的耗时累加到当前线程（缓存命中不调用此函数）。"""
+    _embed_tls.real_ms = getattr(_embed_tls, "real_ms", 0.0) + ms
+
+
+def reset_embed_timer() -> None:
+    """清零当前线程的 embedding 真实耗时累计（每次请求开始时调用一次）。"""
+    _embed_tls.real_ms = 0.0
+
+
+def get_embed_ms() -> float:
+    """读取当前线程自 reset 以来真实 embedding 调用的总耗时（毫秒）。"""
+    return getattr(_embed_tls, "real_ms", 0.0) or 0.0
+
+
+def _cached_embed(key: tuple, do_embed, record_ms):
+    """按 (model, text) 缓存单条文本的向量；缓存满时淘汰最久未用项。
+
+    record_ms：缓存未命中（真实 API 调用）时回调，把耗时计入线程累计；
+    命中缓存时不计时 —— 这是"嵌入 0ms"与"嵌入几百 ms"语义正确分界的关键。
+    """
     with _embed_cache_lock:
         if key in _embed_cache:
             _embed_cache.move_to_end(key)
             return list(_embed_cache[key])
+    t = time.perf_counter()
     vec = do_embed()
     if vec is not None:
+        record_ms((time.perf_counter() - t) * 1000)
         with _embed_cache_lock:
             _embed_cache[key] = list(vec)
             if len(_embed_cache) > settings.EMBED_CACHE_SIZE:
@@ -38,30 +61,22 @@ def _cached_embed(key: tuple, do_embed):
 class TimedOpenAIEmbeddings(OpenAIEmbeddings):
     """OpenAIEmbeddings 的子类，仅用于给 embed_query/embed_documents 包一层耗时统计。
 
-    耗时按线程隔离存放在 _embed_tls.embed_ms（每次调用覆盖）。
-    即使是并发请求共用同一实例，各线程读到的也是自己那次调用的耗时。
+    只累计真实调用 embedding API 的耗时（缓存命中不计入），按线程隔离存放在
+    _embed_tls.real_ms；配合 reset_embed_timer / get_embed_ms 把耗时正确
+    拆分到 safety / embed / retrieve 各栏，并发请求互不串扰。
     """
 
     def embed_query(self, text: str, *args, **kwargs):
-        t = time.perf_counter()
-        try:
-            base_embed = super().embed_query  # 零参数 super() 只能在方法体内直接使用
-            key = (self.model, text)
-            return _cached_embed(key, lambda: base_embed(text, *args, **kwargs))
-        finally:
-            _embed_tls.embed_ms = (time.perf_counter() - t) * 1000
+        base_embed = super().embed_query  # 零参数 super() 只能在方法体内直接使用
+        key = (self.model, text)
+        return _cached_embed(key, lambda: base_embed(text, *args, **kwargs), _record_embed_ms)
 
     def embed_documents(self, texts, *args, **kwargs):
         t = time.perf_counter()
         try:
             return super().embed_documents(texts, *args, **kwargs)
         finally:
-            _embed_tls.embed_ms = (time.perf_counter() - t) * 1000
-
-
-def get_last_embed_ms() -> float:
-    """读取当前线程最近一次 embedding 调用的耗时（毫秒）。"""
-    return getattr(_embed_tls, "embed_ms", 0.0) or 0.0
+            _record_embed_ms((time.perf_counter() - t) * 1000)
 
 
 class PsychologyVectorStore:
