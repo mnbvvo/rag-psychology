@@ -1,13 +1,15 @@
 """关系型数据库初始化（SQLAlchemy + SQLite）。
 
 与 Chroma 向量库互补：Chroma 负责语义检索（向量），本模块负责结构化
-持久化（会话 / 消息 / 危机审计）。使用 SQLAlchemy 抽象，未来切换到
-MySQL 仅需修改 settings.DB_URL，业务代码无需改动。
+持久化（用户 / 会话 / 消息 / 危机审计 / 提示词库 / 对比历史）。
+使用 SQLAlchemy 抽象，未来切换到 MySQL 仅需修改 settings.DB_URL，
+业务代码无需改动。
 """
 import os
+import uuid
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from config.settings import settings
@@ -23,14 +25,17 @@ _connect_args = {"check_same_thread": False} if _is_sqlite(settings.DB_URL) else
 engine = create_engine(settings.DB_URL, connect_args=_connect_args, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
 
+# 历史数据归属账号（所有 user_id 为空的历史行在启动时归入此账号，不可登录）
+LEGACY_USERNAME = "legacy"
+# 需要加 user_id 归属列的表（新增列由轻量迁移补齐；users 表由 create_all 新建）
+_USER_TABLES = ("sessions", "prompts", "compare_history", "crisis_audit")
+
 
 def _migrate_crisis_audit_columns() -> None:
     """SQLite 轻量迁移：老库为 crisis_audit 补充 detect_method / confidence 列。
 
     create_all 只会建新表、不会给已存在的表加列，因此对老库需要显式 ALTER。
     """
-    from sqlalchemy import text
-
     with engine.connect() as conn:
         cols = {row[1] for row in conn.execute(text("PRAGMA table_info(crisis_audit)"))}
         if "detect_method" not in cols:
@@ -38,6 +43,62 @@ def _migrate_crisis_audit_columns() -> None:
         if "confidence" not in cols:
             conn.execute(text("ALTER TABLE crisis_audit ADD COLUMN confidence FLOAT"))
         conn.commit()
+
+
+def _migrate_user_columns() -> None:
+    """轻量迁移：为 4 张业务表补齐 user_id 归属列（幂等）。
+
+    user_id 可空：历史行由 ensure_bootstrap_users 统一归入 legacy 账号，
+    新写入的数据由 crud / API 层强制携带当前用户 id。
+    """
+    with engine.connect() as conn:
+        for table in _USER_TABLES:
+            cols = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
+            if "user_id" not in cols:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN user_id VARCHAR(36)"))
+        conn.commit()
+
+
+def ensure_bootstrap_users() -> None:
+    """引导账号（幂等）：legacy（历史数据归属）+ 初始管理员。
+
+    1. 创建 legacy 账号（不可登录，is_active=False），并把所有 user_id 为空的
+       历史行归入它 —— 保证历史数据有归属且对新用户不可见（数据隔离）。
+    2. users 表为空时按 settings.INIT_ADMIN_USERNAME/PASSWORD 创建管理员，
+       供垂直越权（admin 接口）测试与运维使用；生产环境请通过 .env 覆盖密码。
+    """
+    from modules.security import hash_password, LEGACY_PASSWORD_HASH
+
+    from . import crud
+
+    with SessionLocal.begin() as db:
+        legacy = crud.get_user_by_username(db, LEGACY_USERNAME)
+        if legacy is None:
+            legacy = crud.create_user(
+                db,
+                username=LEGACY_USERNAME,
+                password_hash=LEGACY_PASSWORD_HASH,
+                display_name="历史数据迁移账号",
+                role="admin",
+                is_active=False,
+            )
+        # 无归属的历史行统一归入 legacy
+        for table in _USER_TABLES:
+            db.execute(
+                text(f"UPDATE {table} SET user_id=:uid WHERE user_id IS NULL"),
+                {"uid": legacy.id},
+            )
+        # 初始管理员（users 表为空时创建）
+        admin = crud.get_user_by_username(db, settings.INIT_ADMIN_USERNAME)
+        if admin is None:
+            crud.create_user(
+                db,
+                username=settings.INIT_ADMIN_USERNAME,
+                password_hash=hash_password(settings.INIT_ADMIN_PASSWORD),
+                display_name="管理员",
+                role="admin",
+                is_active=True,
+            )
 
 
 def init_db() -> None:
@@ -54,5 +115,11 @@ def init_db() -> None:
     if _is_sqlite(settings.DB_URL):
         try:
             _migrate_crisis_audit_columns()
+            _migrate_user_columns()
         except Exception as e:
-            print(f"[db][WARN] crisis_audit 列迁移失败（不影响启动）: {e}", flush=True)
+            print(f"[db][WARN] 列迁移失败（不影响启动）: {e}", flush=True)
+    # 引导账号：legacy + 初始管理员（失败不影响启动，仅告警）
+    try:
+        ensure_bootstrap_users()
+    except Exception as e:
+        print(f"[db][WARN] 引导账号创建失败（不影响启动）: {e}", flush=True)

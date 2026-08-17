@@ -95,6 +95,20 @@ class Settings:
     # embedding 进程内缓存（同一问题的向量在检测器与检索间复用，减少 API 调用）
     EMBED_CACHE_SIZE = 2048
 
+    # ============ 认证与授权（JWT Bearer + bcrypt，RBAC 双角色 user/admin） ============
+    # 密钥类进 .env：JWT_SECRET 生产环境必须用强随机串覆盖（openssl rand -hex 32）
+    JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me-in-env")  # JWT 签名密钥（.env 覆盖）
+    JWT_ALGORITHM = "HS256"  # 签名算法
+    JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "120"))  # access token 有效期（分钟）
+
+    # 初始管理员（首次启动 users 表为空时自动创建，仅供本地原型/测试；生产应改为人工置数）
+    INIT_ADMIN_USERNAME = os.getenv("INIT_ADMIN_USERNAME", "admin")
+    INIT_ADMIN_PASSWORD = os.getenv("INIT_ADMIN_PASSWORD", "admin123456")
+
+    # 登录失败限流（内存级；多进程部署需改用共享存储）
+    LOGIN_MAX_FAILS = 5  # 时间窗内最大失败次数
+    LOGIN_LOCK_SECONDS = 900  # 失败锁定时间窗（秒）= 15 分钟
+
     # ============ 限流（仅 POST /api/query，内存级；多进程部署需改用共享存储） ============
     RATE_LIMIT_TIMES = 2000  # 时间窗内单客户端最大请求数
     RATE_LIMIT_SECONDS = 60  # 限流时间窗长度（秒）

@@ -94,8 +94,41 @@ python -m uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
 
 - 接口：`http://127.0.0.1:8000`
 - Swagger：`http://127.0.0.1:8000/docs`
+- 前端：打开 `http://127.0.0.1:8000` 后先进入登录页（注册 / 登录），登录后使用提示词工作台。
+
+## 登录系统测试
+
+`python scripts/test_auth.py`（TestClient 直测，无需起服务；自动关闭重排/语义预热）。
+覆盖：无 token 401、水平越权 403（A 访问 B 的会话/提示词/对比记录）、垂直越权 403
+（普通用户访问 `/api/admin/*`）、请求体篡改 `user_id` 403、A 写入数据 B 查不到、
+提示词越权窃取 403、登录失败锁定 429。共 42 项断言。
 
 ## 接口
+
+> 自 v1.1.0 起，除 `/api/auth/register`、`/api/auth/login`、`/api/health` 外**全部接口需要登录**：
+> 请求头携带 `Authorization: Bearer <token>`（登录返回的 `access_token`）。
+> - 无 token / 无效 / 过期 → `401`
+> - 角色不足（普通用户访问 `/api/admin/*`）→ `403`
+> - 访问他人资源（会话 / 提示词 / 对比记录）→ `403`（水平越权防护）
+> - 请求体携带的 `user_id` 一律忽略，身份以 token 为准（篡改无效）
+
+### 认证接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/auth/register` | 注册普通用户：`{username, password, display_name?}`；用户名 3-32 位字母/数字/下划线、密码 ≥8 位；冲突 409、不合规 400 |
+| POST | `/api/auth/login` | 登录：`{username, password}` → `{access_token, expires_in, user}`；连续失败 5 次锁定 15 分钟（429） |
+| GET | `/api/auth/me` | 当前用户信息（token 有效性校验） |
+
+初始管理员：首次启动 `users` 表为空时自动创建，用户名/密码来自环境变量
+`INIT_ADMIN_USERNAME`（默认 `admin`）/ `INIT_ADMIN_PASSWORD`（默认 `admin123456`，**本地原型专用，生产务必改**）。
+历史数据（无归属的会话/审计/提示词）在启动时自动归入不可登录的 `legacy` 账号，保证数据隔离。
+
+管理员接口：`GET /api/admin/users`（用户列表）、`GET /api/admin/crisis-audit`（危机审计查看），普通用户访问返回 403。
+
+> 认证配置见 `config/settings.py`「认证与授权」一节：`JWT_SECRET`（生产必须用
+> `openssl rand -hex 32` 生成并写入 `.env`）、`JWT_EXPIRE_MINUTES`（默认 120）。
+> 密码使用 bcrypt（cost 12）哈希存储，库中不存明文。
 
 ### GET /api/health
 

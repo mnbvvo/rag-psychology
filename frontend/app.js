@@ -20,9 +20,211 @@ const defaultState = {
 
 // 所有业务数据（提示词 / 会话 / 消息 / 对比历史）均持久化在服务端 SQLite，
 // 前端不再使用浏览器缓存（localStorage）。state 仅作为当前页面运行时的内存镜像。
+// token 例外：登录凭证必须存 localStorage（httpOnly cookie 方案需后端配 CORS 与 CSRF，本地原型不做）。
 let state = structuredClone(defaultState);
 let toastTimer;
 let comparing = false;
+let authMode = "login"; // login | register
+
+// ---------------- 认证（JWT Bearer） ----------------
+const _USERNAME_RE = /^[a-zA-Z0-9_]{3,32}$/;
+const ICON_USER = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7"/></svg>`;
+const ICON_LOCK = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>`;
+const ICON_SPARK = `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M12 2l1.6 5.4L19 9l-5.4 1.6L12 16l-1.6-5.4L5 9l5.4-1.6L12 2zM19 14l.9 2.6L22.5 18l-2.6.9L19 21.5l-.9-2.6L15.5 18l2.6-1.4L19 14z"/></svg>`;
+const LOGO_SVG = `<svg viewBox="0 0 48 48" width="34" height="34" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <defs>
+    <linearGradient id="heartFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.98"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.78"/>
+    </linearGradient>
+  </defs>
+  <path d="M24 40.5s-12.5-7.2-12.5-17.1c0-4.6 3.5-8.4 8-8.4 2.5 0 4.8 1.3 6 3.4 1.2-2.1 3.5-3.4 6-3.4 4.5 0 8 3.8 8 8.4 0 9.9-12.5 17.1-12.5 17.1z" fill="url(#heartFill)"/>
+  <circle cx="24" cy="22" r="2.4" fill="#1D9E75"/>
+  <circle cx="24" cy="22" r="4.5" fill="none" stroke="#1D9E75" stroke-width="1" opacity="0.45"/>
+</svg>`;
+
+function getToken() { return localStorage.getItem("rag_token") || ""; }
+function setToken(t) { localStorage.setItem("rag_token", t); }
+function clearToken() { localStorage.removeItem("rag_token"); state.currentUser = null; }
+
+// 统一请求封装：自动带 Authorization，401 → 清 token 回登录页，403 → 抛"无权限"
+async function apiFetch(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  const token = getToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(path, { ...opts, headers });
+  if (res.status === 401) {
+    clearToken();
+    // 已在登录页则不重复渲染；否则回到登录视图（会话过期）
+    if (!document.querySelector(".auth-card")) renderAuthView();
+    const err = new Error("登录已过期，请重新登录");
+    err.status = 401;
+    throw err;
+  }
+  if (res.status === 403) {
+    let detail = "无权限执行该操作";
+    try { const j = await res.clone().json(); if (j.detail) detail = j.detail; } catch { /* noop */ }
+    const err = new Error(detail);
+    err.status = 403;
+    throw err;
+  }
+  return res;
+}
+
+// 字段级错误提示（a11y：role=alert + aria-invalid）
+function setFieldError(field, msg) {
+  const errEl = document.querySelector(`#err-${field}`);
+  const inputEl = document.querySelector(`#auth-${field}`);
+  if (errEl) errEl.textContent = msg || "";
+  if (inputEl) inputEl.setAttribute("aria-invalid", msg ? "true" : "false");
+}
+
+// 密码强度（注册模式）：长度/字母混合/数字/特殊 四维度，1~4 段
+function updatePasswordStrength(pw) {
+  if (authMode !== "register") return;
+  const el = document.querySelector(".pw-strength");
+  if (!el) return;
+  let score = 0;
+  if (pw.length >= 8) score++;
+  if (/[A-Z]/.test(pw) && /[a-z]/.test(pw)) score++;
+  if (/\d/.test(pw)) score++;
+  if (/[^A-Za-z0-9]/.test(pw)) score++;
+  el.dataset.level = String(score);
+}
+
+// 登录 / 注册视图（未认证时唯一界面）
+function renderAuthView() {
+  const root = document.querySelector("#app");
+  const isRegister = authMode === "register";
+  root.innerHTML = `
+    <div class="auth-shell">
+      <div class="auth-bg" aria-hidden="true">
+        <span class="blob blob-a"></span>
+        <span class="blob blob-b"></span>
+        <span class="blob blob-c"></span>
+      </div>
+      <div class="auth-card" data-mode="${authMode}">
+        <div class="auth-logo">${LOGO_SVG}</div>
+        <h1 class="auth-title">心理 RAG</h1>
+        <p class="auth-sub">${isRegister ? "创建账号，开始使用你的提示词工作台" : "青少年心理知识问答 · 温暖、专业、值得信任"}</p>
+        <form id="auth-form" novalidate>
+          <div class="auth-field">
+            <label class="form-label" for="auth-username">用户名</label>
+            <div class="input-wrap">
+              <span class="input-icon">${ICON_USER}</span>
+              <input id="auth-username" name="username" type="text" placeholder="3-32 位字母/数字/下划线" autocomplete="username" autocapitalize="off" spellcheck="false" required />
+            </div>
+            <p class="form-error" id="err-username" role="alert" aria-live="polite"></p>
+          </div>
+          <div class="auth-field">
+            <label class="form-label" for="auth-password">密码</label>
+            <div class="input-wrap">
+              <span class="input-icon">${ICON_LOCK}</span>
+              <input id="auth-password" name="password" type="password" placeholder="${isRegister ? "至少 8 位，建议字母+数字" : "请输入密码"}" autocomplete="${isRegister ? "new-password" : "current-password"}" required />
+            </div>
+            ${isRegister ? '<div class="pw-strength" data-level="0" aria-hidden="true"><span></span><span></span><span></span><span></span></div>' : ""}
+            <p class="form-error" id="err-password" role="alert" aria-live="polite"></p>
+          </div>
+          ${isRegister ? `
+          <div class="auth-field">
+            <label class="form-label" for="auth-display">显示名 <span class="form-label-hint">（可选）</span></label>
+            <div class="input-wrap">
+              <span class="input-icon input-icon-spark">${ICON_SPARK}</span>
+              <input id="auth-display" name="display_name" type="text" placeholder="留空则使用用户名" maxlength="64" />
+            </div>
+          </div>` : ""}
+          <button class="auth-submit" type="submit" id="auth-submit">
+            <span class="btn-label">${isRegister ? "创建账号" : "登 录"}</span>
+            <span class="btn-spinner" aria-hidden="true"></span>
+          </button>
+        </form>
+        <div class="auth-divider"><span>或</span></div>
+        <button class="auth-toggle" id="auth-toggle" type="button">${isRegister ? "已有账号？立即登录" : "还没有账号？免费注册"}</button>
+        <p class="auth-foot">登录即表示同意《服务协议》与《隐私政策》（占位文案）</p>
+      </div>
+      <div id="toast" class="toast hidden"></div>
+    </div>`;
+  document.querySelector("#auth-toggle").addEventListener("click", () => { authMode = isRegister ? "login" : "register"; renderAuthView(); });
+  document.querySelector("#auth-form").addEventListener("submit", handleAuthSubmit);
+  const pwInput = document.querySelector("#auth-password");
+  if (pwInput) pwInput.addEventListener("input", () => updatePasswordStrength(pwInput.value));
+  document.querySelector("#auth-username").focus();
+}
+
+async function handleAuthSubmit(e) {
+  e.preventDefault();
+  const isRegister = authMode === "register";
+  const username = document.querySelector("#auth-username").value.trim();
+  const password = document.querySelector("#auth-password").value;
+  const display = isRegister ? (document.querySelector("#auth-display")?.value.trim() || username) : undefined;
+
+  // 清空字段错误
+  setFieldError("username", "");
+  setFieldError("password", "");
+
+  // 客户端预校验：内联错误（比 toast 更接近用户视线）
+  if (!username || !password) {
+    if (!username) setFieldError("username", "请输入用户名");
+    if (!password) setFieldError("password", "请输入密码");
+    showToast("请填写用户名和密码", "error");
+    return;
+  }
+  if (!_USERNAME_RE.test(username)) {
+    setFieldError("username", "用户名须为 3-32 位字母/数字/下划线");
+    return;
+  }
+  if (isRegister && password.length < 8) {
+    setFieldError("password", "密码长度至少 8 位");
+    return;
+  }
+
+  const btn = document.querySelector("#auth-submit");
+  btn.disabled = true;
+  btn.dataset.loading = "true";
+  btn.setAttribute("aria-busy", "true");
+
+  try {
+    if (isRegister) {
+      await api("POST", "/api/auth/register", { username, password, display_name: display });
+      authMode = "login";
+      renderAuthView();
+      showToast("注册成功，请登录", "success");
+      return;
+    }
+    const data = await api("POST", "/api/auth/login", { username, password });
+    setToken(data.access_token);
+    state.currentUser = data.user;
+    showToast(`欢迎回来，${data.user.display_name || data.user.username}`, "success");
+    // 登录已成功：数据加载失败不阻断进入工作台（渲染壳兜底），也不显示"认证失败"
+    try {
+      await initApp();
+    } catch (loadErr) {
+      console.error("[initApp] 数据加载失败（已登录，进入工作台）:", loadErr);
+      render();
+      checkConnection();
+    }
+  } catch (err) {
+    // 服务端 401/403 统一内联到密码字段下方（登录失败 / 账号问题）
+    if (err.status === 401) {
+      setFieldError("password", err.message || "用户名或密码错误");
+    } else {
+      setFieldError("password", err.message || "认证失败，请稍后重试");
+    }
+  } finally {
+    const liveBtn = document.querySelector("#auth-submit");
+    if (liveBtn) {
+      liveBtn.disabled = false;
+      delete liveBtn.dataset.loading;
+      liveBtn.removeAttribute("aria-busy");
+    }
+  }
+}
+
+function logout() {
+  clearToken();
+  showToast("已退出登录", "info");
+  renderAuthView();
+}
 
 // ---------------- 持久化指示（数据已统一存于服务端，此处仅更新 UI 提示） ----------------
 function saveState() {
@@ -41,7 +243,14 @@ function escapeHtml(value) {
 
 function showToast(message, type = "info") {
   clearTimeout(toastTimer);
-  const root = document.querySelector("#toast");
+  let root = document.querySelector("#toast");
+  // 健壮性：登录页等未渲染 #toast 的场景自动创建，避免 root 为 null 抛 TypeError
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "toast";
+    root.className = "toast hidden";
+    document.body.appendChild(root);
+  }
   root.textContent = message;
   root.className = `toast ${type}`;
   toastTimer = setTimeout(() => (root.className = "toast hidden"), 3200);
@@ -130,7 +339,7 @@ async function api(method, path, body) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
   }
-  const res = await fetch(path, opts);
+  const res = await apiFetch(path, opts);
   let data = null;
   try { data = await res.json(); } catch { /* noop */ }
   if (!res.ok) throw new Error(data?.detail || `请求失败（${res.status}）`);
@@ -194,6 +403,8 @@ function renderShell() {
           <button class="nav-btn" data-page="compare">提示词对比</button>
         </nav>
         <div class="top-actions">
+          <span class="user-chip" id="user-chip">${escapeHtml(state.currentUser?.display_name || state.currentUser?.username || "")}</span>
+          <button class="ghost-btn" id="logout-btn" type="button" title="退出登录">退出</button>
           <span id="conn" class="conn"><span class="dot"></span><span class="label">连接中…</span></span>
           <span id="save-state" class="save-state">已同步至服务器</span>
         </div>
@@ -206,6 +417,7 @@ function renderShell() {
       <div id="toast" class="toast hidden"></div>
     </div>`;
   document.querySelectorAll("[data-page]").forEach((b) => b.addEventListener("click", () => { state.activePage = b.dataset.page; saveState(); render(); }));
+  document.querySelector("#logout-btn")?.addEventListener("click", logout);
   checkConnection();
 }
 
@@ -703,7 +915,7 @@ async function sendChat(content) {
     if (state.chatPromptId) body.prompt_id = state.chatPromptId;
     if (isFirstTurn) body.title = session.name;
 
-    const resp = await fetch("/api/query/stream", {
+    const resp = await apiFetch("/api/query/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -1135,12 +1347,26 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// ---------------- 启动 ----------------
-(async function init() {
-  await loadPromptConfig();      // 加载提示词库（服务端 SQLite）
-  await loadSessions();          // 加载会话列表（服务端 SQLite）
+// ---------------- 启动（认证门禁：未登录只显示登录页） ----------------
+async function initApp() {
+  await loadPromptConfig();      // 加载提示词库（服务端 SQLite，按当前用户隔离）
+  await loadSessions();          // 加载会话列表（服务端 SQLite，仅当前用户）
   await ensureActiveSession();   // 保证有一个可用会话并载入其消息
-  await loadCompareHistory();    // 加载对比历史（服务端 SQLite）
+  await loadCompareHistory();    // 加载对比历史（服务端 SQLite，仅当前用户）
   render();
   checkConnection();
+}
+
+(async function init() {
+  const token = getToken();
+  if (!token) { renderAuthView(); return; }
+  try {
+    // 校验 token 有效性（无效/过期 → 401 → api 抛错）
+    state.currentUser = await api("GET", "/api/auth/me");
+  } catch {
+    clearToken();
+    renderAuthView();
+    return;
+  }
+  await initApp();
 })();

@@ -29,7 +29,7 @@ from typing import Dict, List, Optional
 
 from sqlalchemy import select
 
-from db import crud
+from db import crud, LEGACY_USERNAME
 from db.models import Prompt
 
 _CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
@@ -157,12 +157,18 @@ def _config_from_rows(rows: List[Prompt], active_id: str) -> Dict:
 
 
 def ensure_prompts_seeded() -> None:
-    """首次启动：若 prompts 表为空，则从已有 system_prompt.json 迁移，否则用出厂默认 seed。"""
+    """首次启动：若 prompts 表为空，则从已有 system_prompt.json 迁移，否则用出厂默认 seed。
+
+    历史版本提示词无用户归属：seed 结果统一归入 legacy 账号（仅作历史留档，
+    新用户通过 ensure_user_prompts 获得自己的出厂默认提示词）。
+    """
     _ensure_default_file()
     with _lock:
         with crud.get_db() as db:
             if crud.count_prompts(db) > 0:
                 return
+            legacy = crud.get_user_by_username(db, LEGACY_USERNAME)
+            legacy_id = legacy.id if legacy else None
             src = _CURRENT_FILE if _CURRENT_FILE.exists() else _DEFAULT_FILE
             try:
                 data = _merge_with_default(json.loads(src.read_text(encoding="utf-8")))
@@ -173,18 +179,51 @@ def ensure_prompts_seeded() -> None:
                 is_active = (p.get("id") == active_id) or (i == 0 and not active_id)
                 db.add(Prompt(
                     id=p["id"],
+                    user_id=legacy_id,
                     name=p.get("name", "未命名提示词"),
                     content=p.get("content", ""),
                     is_active=bool(is_active),
                 ))
 
 
-def get_prompt_config() -> Dict:
-    """返回 {current, default}，供前端展示完整提示词库。current 来自 SQLite，default 来自出厂文件。"""
+def ensure_user_prompts(user_id: str) -> None:
+    """用户首次使用：若该用户尚无任何提示词，从出厂默认 seed 一份（activeId=default）。
+
+    每个用户独立提示词库（数据隔离）：用户 A 的提示词永远不出现在 B 的列表中。
+    Prompt.id 是全局主键，用户级 seed 的 id 加用户前缀保证唯一。
+    """
+    if not user_id:
+        return
+    _ensure_default_file()
     with _lock:
         with crud.get_db() as db:
-            rows = crud.list_prompts(db)
-            active = crud.get_active_prompt_row(db)
+            if crud.count_prompts(db, user_id=user_id) > 0:
+                return
+            data = _merge_with_default(json.loads(_DEFAULT_FILE.read_text(encoding="utf-8")))
+            active_id = data.get("activeId")
+            for i, p in enumerate(data["prompts"]):
+                pid = p.get("id") or uuid.uuid4().hex[:8]
+                if user_id:
+                    pid = f"{pid}-{user_id[:8]}"
+                is_active = (p.get("id") == active_id) or (i == 0 and not active_id)
+                db.add(Prompt(
+                    id=pid,
+                    user_id=user_id,
+                    name=p.get("name", "未命名提示词"),
+                    content=p.get("content", ""),
+                    is_active=bool(is_active),
+                ))
+
+
+def get_prompt_config(user_id: str | None = None) -> Dict:
+    """返回 {current, default}，供前端展示完整提示词库。
+
+    current 只含该用户的提示词（user_id 必传，数据隔离）；default 为公共出厂模板。
+    """
+    with _lock:
+        with crud.get_db() as db:
+            rows = crud.list_prompts(db, user_id=user_id)
+            active = crud.get_active_prompt_row(db, user_id=user_id)
             active_id = active.id if active else (rows[0].id if rows else "")
             current = _config_from_rows(rows, active_id)
     _ensure_default_file()
@@ -192,19 +231,19 @@ def get_prompt_config() -> Dict:
     return {"current": current, "default": default}
 
 
-def update_prompt_config(partial: Dict) -> Dict:
-    """更新提示词库（SQLite 持久化）。
+def update_prompt_config(partial: Dict, user_id: str | None = None) -> Dict:
+    """更新提示词库（SQLite 持久化，仅限当前用户的数据）。
 
     支持：
     - partial.prompts: 完整替换 prompts[]
     - partial.activeId: 设置激活提示词
     - partial.add: {name, content} 新增一条提示词（自动设为激活）
-    - partial.update: {id, name, content} 更新某条
-    - partial.deleteId: 删除指定 id
+    - partial.update: {id, name, content} 更新某条（归属校验：他人 id 查不到即忽略）
+    - partial.deleteId: 删除指定 id（归属校验）
     """
     with _lock:
         with crud.get_db() as db:
-            rows = crud.list_prompts(db)
+            rows = crud.list_prompts(db, user_id=user_id)
             by_id = {p.id: p for p in rows}
 
             if "prompts" in partial and isinstance(partial["prompts"], list):
@@ -214,7 +253,7 @@ def update_prompt_config(partial: Dict) -> Dict:
                     new_ids.add(pid)
                     p = by_id.get(pid)
                     if p is None:
-                        p = Prompt(id=pid, name=item.get("name", "未命名提示词"), content=item.get("content", ""))
+                        p = Prompt(id=pid, user_id=user_id, name=item.get("name", "未命名提示词"), content=item.get("content", ""))
                         db.add(p)
                         by_id[pid] = p
                     else:
@@ -222,7 +261,7 @@ def update_prompt_config(partial: Dict) -> Dict:
                             p.name = item["name"]
                         if item.get("content") is not None:
                             p.content = item["content"]
-                # 删除不在新列表中的旧提示词
+                # 删除不在新列表中的旧提示词（仅限当前用户的）
                 for pid in list(by_id.keys()):
                     if pid not in new_ids:
                         db.delete(by_id[pid])
@@ -230,9 +269,9 @@ def update_prompt_config(partial: Dict) -> Dict:
 
             if partial.get("add") and isinstance(partial["add"], dict):
                 new_id = uuid.uuid4().hex[:8]
-                for other in crud.list_prompts(db):
+                for other in crud.list_prompts(db, user_id=user_id):
                     other.is_active = False
-                p = Prompt(id=new_id, name=partial["add"].get("name", "新提示词"),
+                p = Prompt(id=new_id, user_id=user_id, name=partial["add"].get("name", "新提示词"),
                            content=partial["add"].get("content", ""), is_active=True)
                 db.add(p)
                 by_id[new_id] = p
@@ -240,7 +279,8 @@ def update_prompt_config(partial: Dict) -> Dict:
             if partial.get("update") and isinstance(partial["update"], dict):
                 upd = partial["update"]
                 pid = upd.get("id")
-                p = by_id.get(pid) or db.get(Prompt, pid)
+                # 归属校验：只能更新当前用户自己的提示词
+                p = by_id.get(pid) or crud.get_prompt_row(db, pid, user_id=user_id)
                 if p:
                     if upd.get("name") is not None:
                         p.name = upd["name"]
@@ -249,7 +289,7 @@ def update_prompt_config(partial: Dict) -> Dict:
 
             if partial.get("deleteId"):
                 pid = partial["deleteId"]
-                p = by_id.get(pid) or db.get(Prompt, pid)
+                p = by_id.get(pid) or crud.get_prompt_row(db, pid, user_id=user_id)
                 if p:
                     was_active = p.is_active
                     db.delete(p)
@@ -260,59 +300,63 @@ def update_prompt_config(partial: Dict) -> Dict:
                     if pid in by_id:
                         del by_id[pid]
                     if was_active:
-                        nxt = crud.list_prompts(db)
+                        nxt = crud.list_prompts(db, user_id=user_id)
                         if nxt:
                             nxt[0].is_active = True
 
             if partial.get("activeId"):
                 aid = partial["activeId"]
-                for p in crud.list_prompts(db):
+                for p in crud.list_prompts(db, user_id=user_id):
                     p.is_active = (p.id == aid)
 
             db.flush()
-            rows = crud.list_prompts(db)
-            active = crud.get_active_prompt_row(db)
+            rows = crud.list_prompts(db, user_id=user_id)
+            active = crud.get_active_prompt_row(db, user_id=user_id)
             active_id = active.id if active else (rows[0].id if rows else "")
             return _config_from_rows(rows, active_id)
 
 
-def reset_prompt_config() -> Dict:
-    """还原为出厂默认（清空 prompts 表，重新从出厂文件 seed）。"""
+def reset_prompt_config(user_id: str | None = None) -> Dict:
+    """还原当前用户提示词为出厂默认（清空该用户的 prompts，重新从出厂文件 seed）。"""
     with _lock:
         with crud.get_db() as db:
-            for p in crud.list_prompts(db):
+            for p in crud.list_prompts(db, user_id=user_id):
                 db.delete(p)
             _ensure_default_file()
             data = _merge_with_default(json.loads(_DEFAULT_FILE.read_text(encoding="utf-8")))
             active_id = data.get("activeId")
             for i, p in enumerate(data["prompts"]):
+                pid = p.get("id") or uuid.uuid4().hex[:8]
+                if user_id:
+                    pid = f"{pid}-{user_id[:8]}"
                 is_active = (p.get("id") == active_id) or (i == 0 and not active_id)
                 db.add(Prompt(
-                    id=p["id"],
+                    id=pid,
+                    user_id=user_id,
                     name=p.get("name", "未命名提示词"),
                     content=p.get("content", ""),
                     is_active=bool(is_active),
                 ))
             db.flush()
-            rows = crud.list_prompts(db)
-            active = crud.get_active_prompt_row(db)
+            rows = crud.list_prompts(db, user_id=user_id)
+            active = crud.get_active_prompt_row(db, user_id=user_id)
             active_id = active.id if active else (rows[0].id if rows else "")
             return _config_from_rows(rows, active_id)
 
 
-def get_active_prompt() -> Dict:
-    """返回当前激活的提示词对象。"""
+def get_active_prompt(user_id: str | None = None) -> Dict:
+    """返回当前用户激活的提示词对象。"""
     with _lock:
         with crud.get_db() as db:
-            p = crud.get_active_prompt_row(db)
+            p = crud.get_active_prompt_row(db, user_id=user_id)
             return _row_to_prompt(p) if p else {"id": "", "name": "", "content": ""}
 
 
-def get_prompt_by_id(prompt_id: str) -> Optional[Dict]:
-    """按 id 查找提示词。"""
+def get_prompt_by_id(prompt_id: str, user_id: str | None = None) -> Optional[Dict]:
+    """按 id 查找提示词（归属校验：user_id 下查不到返回 None，API 层转 403）。"""
     with _lock:
         with crud.get_db() as db:
-            p = db.get(Prompt, prompt_id)
+            p = crud.get_prompt_row(db, prompt_id, user_id=user_id)
             return _row_to_prompt(p) if p else None
 
 
@@ -321,19 +365,25 @@ def build_system_prompt(
     low_relevance: bool = False,
     system_prompt_override: Optional[str] = None,
     prompt_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> str:
     """组装最终系统提示词：active prompt content + 参考资料({context})。
 
     - system_prompt_override: 若传入，直接用该字符串作为基础文本（前端不保存测试）。
-    - prompt_id: 指定使用库中某条提示词；若未指定且未传 override，则使用 activeId。
+    - prompt_id: 指定使用库中某条提示词（归属校验由 API 入口完成，此处兜底回退）；
+      若未指定且未传 override，则使用当前用户 activeId。
+    - user_id: 当前用户（提示词按用户隔离的解析基础）。
     """
     if system_prompt_override is not None:
         base = system_prompt_override
     elif prompt_id:
-        p = get_prompt_by_id(prompt_id)
+        p = get_prompt_by_id(prompt_id, user_id)
         base = p["content"] if p else ""
+        # 防御兜底：指定的提示词不可见（越权/被删）时回退到激活提示词，不泄露他人内容
+        if not base:
+            base = get_active_prompt(user_id)["content"]
     else:
-        base = get_active_prompt()["content"]
+        base = get_active_prompt(user_id)["content"]
 
     # 有参考资料时正常拼接；检索为空时**不要**输出 {context} 字面占位——
     # 它会触发 ChatPromptTemplate 的模板变量解析（缺 context 变量报 KeyError），

@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import time
 from collections import defaultdict, deque
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.concurrency import run_in_threadpool
@@ -27,18 +27,25 @@ from modules.prompt_store import (
     update_prompt_config,
     reset_prompt_config,
     ensure_prompts_seeded,
+    ensure_user_prompts,
+    get_prompt_by_id,
 )
 from config.settings import settings
 from db import init_db, crud
 from db.models import Session as ConvSession, CompareHistory
+from api.auth import router as auth_router
+from api.deps import get_current_user, require_admin
 from sqlalchemy import select, desc, func
 import uuid
 
 app = FastAPI(
     title="青少年心理RAG系统API",
-    description="基于RAG的6-18岁青少年心理咨询系统",
-    version="1.0.0",
+    description="基于RAG的6-18岁青少年心理咨询系统（含登录鉴权与危机干预）",
+    version="1.1.0",
 )
+
+# 认证路由（/api/auth/register、/api/auth/login、/api/auth/me）
+app.include_router(auth_router)
 
 # 跨域：默认仅放行本服务同源 + localhost（前端由本服务托管时同源本不需要跨域；
 # 若前端独立部署 / 用开发服务器，请在 .env 用 CORS_ORIGINS 显式放行，切勿用 "*"）。
@@ -53,6 +60,42 @@ app.add_middleware(
 
 # 简单内存限流：仅针对 POST /api/query 与 /api/query/stream，防止单客户端刷接口
 _rate_limit_store: dict[str, deque] = defaultdict(deque)
+
+
+# ---------------- 越权预校验（在调用 LLM 之前快速失败） ----------------
+def _assert_no_impersonation(body_user_id, real_user_id: str) -> None:
+    """请求体篡改 user_id → 403：身份永远以 token 为准，客户端传的 user_id 一律不信任。"""
+    if body_user_id and body_user_id != real_user_id:
+        raise HTTPException(status_code=403, detail="无权以其他用户身份操作")
+
+
+def _assert_session_ownership(session_id, user_id: str) -> None:
+    """水平越权：session_id 已存在但不属于当前用户 → 403（未创建的新 id 放行）。"""
+    if not session_id:
+        return
+    with crud.get_db() as db:
+        if not crud.session_belongs_to(db, session_id, user_id):
+            raise HTTPException(status_code=403, detail="无权访问该会话")
+
+
+def _assert_prompt_ownership(prompt_id, user_id: str) -> None:
+    """提示词越权：prompt_id 必须属于当前用户（不存在或非本人 → 403）。
+    用于 query 的 prompt_id、update/delete/activeId 等"必须指向本人已有提示词"的场景。
+    """
+    if not prompt_id:
+        return
+    if get_prompt_by_id(prompt_id, user_id) is None:
+        raise HTTPException(status_code=403, detail="无权使用该提示词")
+
+
+def _assert_prompt_owned_or_new(prompt_id, user_id: str) -> None:
+    """完整替换列表的归属预校验：全局已存在但非本人 → 403；全新 id（新增项）放行。"""
+    if not prompt_id:
+        return
+    with crud.get_db() as db:
+        exists_global = crud.get_prompt_row(db, prompt_id) is not None
+    if exists_global and get_prompt_by_id(prompt_id, user_id) is None:
+        raise HTTPException(status_code=403, detail="无权操作该提示词")
 
 
 @app.middleware("http")
@@ -93,6 +136,10 @@ class QueryRequest(BaseModel):
     session_id: Optional[str] = Field(
         None,
         description="会话 id（前端本地生成，如 session-<timestamp>）；不传则由服务端生成并在响应中返回。用于把多轮对话与危机审计持久化到关系库。",
+    )
+    user_id: Optional[str] = Field(
+        None,
+        description="（忽略项）兼容外部测试传入的伪造字段；服务端身份一律以 token 为准，传入值不等于当前用户时返回 403。",
     )
     title: Optional[str] = Field(
         None,
@@ -158,12 +205,17 @@ class CompareHistoryItem(BaseModel):
 
 
 @app.post("/api/query", response_model=QueryResponse)
-async def query(request: QueryRequest):
+async def query(request: QueryRequest, current_user=Depends(get_current_user)):
     """
     查询接口
     接收用户问题，返回RAG生成的回答，并把本轮对话与（若命中）危机事件
-    持久化到关系库（与 Chroma 向量检索互补）。
+    持久化到关系库（与 Chroma 向量检索互补）。需要登录（Bearer JWT）。
     """
+    # —— 越权预校验：在调用 LLM 之前快速失败，杜绝资源泄露与算力浪费 ——
+    _assert_no_impersonation(request.user_id, current_user.id)
+    _assert_session_ownership(request.session_id, current_user.id)
+    _assert_prompt_ownership(request.prompt_id, current_user.id)
+
     try:
         result = await run_in_threadpool(
             rag_system.query,
@@ -172,9 +224,10 @@ async def query(request: QueryRequest):
             check_safety=True,
             system_prompt_override=request.system_prompt_override,
             prompt_id=request.prompt_id,
+            user_id=current_user.id,
         )
 
-        # —— 持久化到关系库（会话 + 危机审计） ——
+        # —— 持久化到关系库（会话 + 危机审计，归属当前用户） ——
         # 与 Chroma 向量库分工：Chroma 管检索，这里管结构化留痕。
         # 仅对话联调页（persist=true）需要落库；提示词对比页传 persist=false，
         # 其临时问答不写入会话表，避免泄漏到历史对话列表。
@@ -194,6 +247,7 @@ async def query(request: QueryRequest):
                         # 自动命名提示：优先用前端首次提问传入的标题，否则回退到当前问题；
                         # 服务端只会在会话标题仍为占位名时采纳（见 crud._auto_title）
                         title=(request.title or current_question or None),
+                        user_id=current_user.id,
                     )
                     sc = result.get("safety_check")
                     if sc and sc.get("is_crisis"):
@@ -207,6 +261,7 @@ async def query(request: QueryRequest):
                             is_crisis_response=bool(result.get("is_crisis_response")),
                             detect_method=sc.get("detect_method") if isinstance(sc, dict) else None,
                             confidence=sc.get("confidence") if isinstance(sc, dict) else None,
+                            user_id=current_user.id,
                         )
                     # 回答侧命中高危：另记一条审计（detect_method=answer_check）
                     ans_sc = result.get("answer_safety_check")
@@ -220,6 +275,7 @@ async def query(request: QueryRequest):
                             response=answer,
                             is_crisis_response=False,
                             detect_method="answer_check",
+                            user_id=current_user.id,
                         )
             except Exception as e:
                 print(f"[persist][WARN] 会话持久化失败（回答已正常返回）: {e}", flush=True)
@@ -247,13 +303,18 @@ def _sse(event: str, data: dict) -> str:
 
 
 @app.post("/api/query/stream")
-async def query_stream(stream_request: Request, request: QueryRequest):
+async def query_stream(stream_request: Request, request: QueryRequest, current_user=Depends(get_current_user)):
     """
-    SSE 流式问答（对话联调页使用）。
+    SSE 流式问答（对话联调页使用）。需要登录（Bearer JWT）。
 
     事件流：sources（来源 + 检索耗时）→ token×N（逐块文本）→ done（完整回答 +
     safety_note + timings + session_id，已落库）；高危危机直接发 done；异常发 error。
     """
+    # 越权预校验（与 /api/query 一致，在调用 LLM 之前快速失败）
+    _assert_no_impersonation(request.user_id, current_user.id)
+    _assert_session_ownership(request.session_id, current_user.id)
+    _assert_prompt_ownership(request.prompt_id, current_user.id)
+
     async def event_stream():
         try:
             # 全流程墙钟计时（用于 done 事件里的 total，与 /api/query 语义一致）
@@ -266,6 +327,7 @@ async def query_stream(stream_request: Request, request: QueryRequest):
                 check_safety=True,
                 system_prompt_override=request.system_prompt_override,
                 prompt_id=request.prompt_id,
+                user_id=current_user.id,
             )
             if prep.get("is_crisis_response"):
                 # 高危拦截同样写会话与危机审计（此前缺失：前端对话页走的就是 stream，
@@ -277,6 +339,7 @@ async def query_stream(stream_request: Request, request: QueryRequest):
                             crud.append_turn(
                                 db, session_id, prep.get("question", ""), prep.get("answer", ""),
                                 title=(request.title or prep.get("question") or None),
+                                user_id=current_user.id,
                             )
                             sc = prep.get("safety_check") or {}
                             crud.log_crisis(
@@ -288,6 +351,7 @@ async def query_stream(stream_request: Request, request: QueryRequest):
                                 is_crisis_response=True,
                                 detect_method=sc.get("detect_method") if isinstance(sc, dict) else None,
                                 confidence=sc.get("confidence") if isinstance(sc, dict) else None,
+                                user_id=current_user.id,
                             )
                     except Exception as e:
                         print(f"[persist][WARN] 高危危机审计写入失败: {e}", flush=True)
@@ -316,6 +380,7 @@ async def query_stream(stream_request: Request, request: QueryRequest):
                 # 必须传归一化后的消息（role=human/ai），否则前端 user/assistant
                 # 角色在 _build_messages 里不匹配被静默丢弃，多轮历史全部丢失
                 messages=prep.get("norm_messages"),
+                user_id=current_user.id,
             ):
                 full.append(chunk)
                 yield _sse("token", {"text": chunk})
@@ -340,6 +405,7 @@ async def query_stream(stream_request: Request, request: QueryRequest):
                         crud.append_turn(
                             db, session_id, prep.get("question", ""), answer,
                             title=(request.title or prep.get("question") or None),
+                            user_id=current_user.id,
                         )
                         sc = prep.get("safety_check")
                         if sc and sc.get("is_crisis"):
@@ -352,6 +418,7 @@ async def query_stream(stream_request: Request, request: QueryRequest):
                                 is_crisis_response=False,
                                 detect_method=sc.get("detect_method") if isinstance(sc, dict) else None,
                                 confidence=sc.get("confidence") if isinstance(sc, dict) else None,
+                                user_id=current_user.id,
                             )
                         # 回答侧命中高危：另记一条审计（detect_method=answer_check）
                         if ans_check and ans_check.get("is_crisis"):
@@ -363,6 +430,7 @@ async def query_stream(stream_request: Request, request: QueryRequest):
                                 response=answer,
                                 is_crisis_response=False,
                                 detect_method="answer_check",
+                                user_id=current_user.id,
                             )
                 except Exception as e:
                     print(f"[persist][WARN] 会话持久化失败（回答已正常返回）: {e}", flush=True)
@@ -406,11 +474,16 @@ async def health_check():
 
 
 @app.get("/api/sessions")
-async def list_sessions(limit: int = 50):
-    """列出最近会话（含消息数），用于审计/排查。"""
+async def list_sessions(limit: int = 50, current_user=Depends(get_current_user)):
+    """列出当前用户的最近会话（含消息数）；他人会话不可见（数据隔离）。"""
     with crud.get_db() as db:
         rows = (
-            db.execute(select(ConvSession).order_by(desc(ConvSession.updated_at)).limit(limit))
+            db.execute(
+                select(ConvSession)
+                .where(ConvSession.user_id == current_user.id)
+                .order_by(desc(ConvSession.updated_at))
+                .limit(limit)
+            )
             .scalars()
             .all()
         )
@@ -427,12 +500,14 @@ async def list_sessions(limit: int = 50):
 
 
 @app.get("/api/sessions/{session_id}/messages")
-async def get_session_messages(session_id: str):
-    """获取某会话的全部消息（按时间顺序）。"""
+async def get_session_messages(session_id: str, current_user=Depends(get_current_user)):
+    """获取某会话的全部消息（按时间顺序）；非本人会话 → 403。"""
     with crud.get_db() as db:
         sess = db.get(ConvSession, session_id)
         if sess is None:
-            raise HTTPException(status_code=404, detail="会话不存在")
+            raise HTTPException(status_code=403, detail="无权访问该会话")
+        if sess.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="无权访问该会话")
         return [
             {
                 "role": m.role,
@@ -444,10 +519,10 @@ async def get_session_messages(session_id: str):
 
 
 @app.post("/api/sessions")
-async def create_session(payload: SessionCreate):
-    """新建一个空会话，返回服务端生成的 id（前端以此为后续对话归属）。"""
+async def create_session(payload: SessionCreate, current_user=Depends(get_current_user)):
+    """新建一个空会话（归属当前用户），返回服务端生成的 id。"""
     with crud.get_db() as db:
-        sess = ConvSession(id=uuid.uuid4().hex, title=(payload.name or "新的对话")[:255])
+        sess = ConvSession(id=uuid.uuid4().hex, title=(payload.name or "新的对话")[:255], user_id=current_user.id)
         db.add(sess)
         db.flush()
         return {
@@ -460,32 +535,32 @@ async def create_session(payload: SessionCreate):
 
 
 @app.patch("/api/sessions/{session_id}")
-async def rename_session(session_id: str, payload: SessionRename):
-    """重命名会话。"""
+async def rename_session(session_id: str, payload: SessionRename, current_user=Depends(get_current_user)):
+    """重命名会话；非本人会话 → 403。"""
     with crud.get_db() as db:
         sess = db.get(ConvSession, session_id)
-        if sess is None:
-            raise HTTPException(status_code=404, detail="会话不存在")
+        if sess is None or sess.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="无权操作该会话")
         sess.title = payload.name[:255]
         return {"id": sess.id, "name": sess.title}
 
 
 @app.delete("/api/sessions/{session_id}")
-async def delete_session(session_id: str):
-    """删除会话（级联删除其消息）。"""
+async def delete_session(session_id: str, current_user=Depends(get_current_user)):
+    """删除会话（级联删除其消息）；非本人会话 → 403。"""
     with crud.get_db() as db:
         sess = db.get(ConvSession, session_id)
-        if sess is None:
-            raise HTTPException(status_code=404, detail="会话不存在")
+        if sess is None or sess.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="无权操作该会话")
         db.delete(sess)
     return {"ok": True, "id": session_id}
 
 
 @app.get("/api/compare-history")
-async def list_compare_history(limit: int = 50):
-    """列出对比历史记录（含 A/B 完整结果）。"""
+async def list_compare_history(limit: int = 50, current_user=Depends(get_current_user)):
+    """列出当前用户的对比历史记录（含 A/B 完整结果）；他人记录不可见。"""
     with crud.get_db() as db:
-        rows = crud.list_compare_history(db, limit=limit)
+        rows = crud.list_compare_history(db, limit=limit, user_id=current_user.id)
         return [
             {
                 "id": r.id,
@@ -499,14 +574,15 @@ async def list_compare_history(limit: int = 50):
 
 
 @app.post("/api/compare-history")
-async def add_compare_history(item: CompareHistoryItem):
-    """新增一条对比历史记录。"""
+async def add_compare_history(item: CompareHistoryItem, current_user=Depends(get_current_user)):
+    """新增一条对比历史记录（归属当前用户）。"""
     with crud.get_db() as db:
         r = crud.add_compare_history(
             db,
             item.input,
             json.dumps(item.a, ensure_ascii=False),
             json.dumps(item.b, ensure_ascii=False),
+            user_id=current_user.id,
         )
         return {
             "id": r.id,
@@ -518,12 +594,12 @@ async def add_compare_history(item: CompareHistoryItem):
 
 
 @app.delete("/api/compare-history/{item_id}")
-async def delete_compare_history(item_id: int):
-    """删除一条对比历史记录。"""
+async def delete_compare_history(item_id: int, current_user=Depends(get_current_user)):
+    """删除一条对比历史记录；非本人记录 → 403。"""
     with crud.get_db() as db:
-        r = crud.get_compare_history(db, item_id)
+        r = crud.get_compare_history(db, item_id, user_id=current_user.id)
         if r is None:
-            raise HTTPException(status_code=404, detail="记录不存在")
+            raise HTTPException(status_code=403, detail="无权操作该记录")
         db.delete(r)
     return {"ok": True, "id": item_id}
 
@@ -558,20 +634,33 @@ class PromptUpdate(BaseModel):
 
 
 @app.get("/api/system-prompt")
-async def get_system_prompt():
+async def get_system_prompt(current_user=Depends(get_current_user)):
     """
-    获取当前与默认的系统提示词配置，供前端双栏对比展示。
-    返回 { current: {...}, default: {...} }。
+    获取当前用户与默认的系统提示词配置，供前端双栏对比展示。
+    返回 { current: {...}, default: {...} }；current 只含当前用户的提示词（数据隔离）。
     """
-    return get_prompt_config()
+    # 用户首次访问时自动 seed 出厂默认提示词（幂等）
+    ensure_user_prompts(current_user.id)
+    return get_prompt_config(current_user.id)
 
 
 @app.put("/api/system-prompt")
-async def put_system_prompt(payload: PromptUpdate):
+async def put_system_prompt(payload: PromptUpdate, current_user=Depends(get_current_user)):
     """
-    更新系统提示词库（持久化到 SQLite 的 prompts 表）。
-    支持增删改、完整替换、设置激活提示词。
+    更新当前用户的系统提示词库（持久化到 SQLite 的 prompts 表）。
+    支持增删改、完整替换、设置激活提示词；越权操作他人提示词 id → 403。
     """
+    # 归属预校验放在 try 外：HTTPException(403) 不能被下方的业务 except 吞成 400
+    if payload.prompts is not None:
+        for item in payload.prompts:
+            if item.id:
+                _assert_prompt_owned_or_new(item.id, current_user.id)
+    if payload.activeId:
+        _assert_prompt_ownership(payload.activeId, current_user.id)
+    if payload.update is not None and payload.update.id:
+        _assert_prompt_ownership(payload.update.id, current_user.id)
+    if payload.deleteId:
+        _assert_prompt_ownership(payload.deleteId, current_user.id)
     try:
         update_payload = {}
         if payload.prompts is not None:
@@ -588,19 +677,61 @@ async def put_system_prompt(payload: PromptUpdate):
         if not update_payload:
             raise ValueError("未提供任何更新字段")
 
-        saved = update_prompt_config(update_payload)
+        saved = update_prompt_config(update_payload, current_user.id)
         return {"ok": True, "config": saved}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/system-prompt/reset")
-async def reset_system_prompt():
+async def reset_system_prompt(current_user=Depends(get_current_user)):
     """
-    还原系统提示词为出厂默认（清空 prompts 表并重新从出厂文件 seed）。
+    还原当前用户系统提示词为出厂默认（清空该用户的 prompts 并重新 seed）。
+    仅影响当前用户，不影响他人提示词。
     """
-    saved = reset_prompt_config()
+    saved = reset_prompt_config(current_user.id)
     return {"ok": True, "config": saved}
+
+
+# ---------------- 管理员接口（垂直越权测试目标：普通用户访问 → 403） ----------------
+@app.get("/api/admin/users")
+async def admin_list_users(admin=Depends(require_admin)):
+    """管理员：查看用户列表。"""
+    with crud.get_db() as db:
+        users = crud.list_users(db)
+        return [
+            {
+                "id": u.id,
+                "username": u.username,
+                "display_name": u.display_name,
+                "role": u.role,
+                "is_active": u.is_active,
+                "created_at": u.created_at.isoformat() if u.created_at else None,
+            }
+            for u in users
+        ]
+
+
+@app.get("/api/admin/crisis-audit")
+async def admin_list_crisis_audits(limit: int = 100, admin=Depends(require_admin)):
+    """管理员：查看危机审计记录（合规留痕，仅管理员可见）。"""
+    with crud.get_db() as db:
+        rows = crud.list_crisis_audits(db, limit=limit)
+        return [
+            {
+                "id": r.id,
+                "user_id": r.user_id,
+                "session_id": r.session_id,
+                "crisis_level": r.crisis_level,
+                "keywords_found": json.loads(r.keywords_found) if r.keywords_found else None,
+                "question": r.question,
+                "is_crisis_response": r.is_crisis_response,
+                "detect_method": r.detect_method,
+                "confidence": r.confidence,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
 
 
 @app.on_event("startup")

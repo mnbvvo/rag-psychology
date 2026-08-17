@@ -82,12 +82,14 @@ class PsychologyRAGSystem:
         system_prompt_override: Optional[str] = None,
         prompt_id: Optional[str] = None,
         messages: Optional[List[Dict]] = None,
+        user_id: Optional[str] = None,
     ) -> Dict:
         """安全检测 + 检索（不含生成）。
 
         供 SSE 端点复用：先同步完成 safety + 混合检索 + 重排，返回
         context/sources/safety/timings；高危时 is_crisis_response=True 且
         answer 为危机响应，此时不应再进入生成阶段。
+        user_id：当前用户（提示词归属解析，透传至生成阶段）。
         """
         norm_messages, current_question = self._normalize(messages, question)
         result = {
@@ -160,15 +162,17 @@ class PsychologyRAGSystem:
         system_prompt_override: Optional[str] = None,
         prompt_id: Optional[str] = None,
         messages: Optional[List[Dict]] = None,
+        user_id: Optional[str] = None,
     ) -> Dict:
         """查询系统（同步完整流程：prepare + generate）。
 
         支持单轮 question 或多轮 messages。多轮模式下，从最后一条 human/user
         消息提取当前问题用于检索与安全检测，完整历史传给 LLM 作为上下文。
+        user_id：当前用户（提示词归属解析 + 持久化归属）。
         """
         # 全流程墙钟：从 prepare（安全+检索+重排）到生成结束，与 SSE 端点 total 语义一致
         t_query = time.perf_counter()
-        prep = self.prepare(question, check_safety, system_prompt_override, prompt_id, messages)
+        prep = self.prepare(question, check_safety, system_prompt_override, prompt_id, messages, user_id)
         timings = prep.get("timings") or {}
 
         # 高危：直接返回危机响应（prepare 内已记录全程 total）
@@ -179,6 +183,7 @@ class PsychologyRAGSystem:
         gen = self.rag.generate(
             prep["question"], prep.get("context") or [],
             system_prompt_override, prompt_id, timings=timings, messages=prep.get("norm_messages"),
+            user_id=user_id,
         )
         prep["answer"] = gen["answer"]
         prep["sources"] = gen["sources"]

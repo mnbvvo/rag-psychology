@@ -18,6 +18,10 @@ openai>=1.30.0
 # HTTP 客户端（Starlette / langchain 底层使用）
 httpx>=0.27.0
 
+# 认证与授权（登录系统：JWT Bearer + bcrypt 密码哈希）
+pyjwt>=2.8.0
+bcrypt>=4.0.0
+
 # 本地重排序（Cross-Encoder，bge-reranker-v2-m3）
 # torch 依赖较大且分 CPU/CUDA 版：CPU 直接 pip install torch；
 # 有 NVIDIA GPU 建议装 CUDA 版（python -m pip install torch --index-url https://download.pytorch.org/whl/cu124）

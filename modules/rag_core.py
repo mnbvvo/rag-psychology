@@ -189,9 +189,11 @@ class PsychologyRAG:
         system_prompt_override: Optional[str] = None,
         prompt_id: Optional[str] = None,
         messages: Optional[List[Dict]] = None,
+        user_id: Optional[str] = None,
     ) -> List:
         """组装直接传给 LLM 的消息列表（generate 与 stream_generate 共用）。
 
+        user_id：当前用户（提示词按用户隔离的解析基础，见 prompt_store.build_system_prompt）。
         直接返回消息元组列表交给 llm.invoke/astream，**绕过 ChatPromptTemplate
         的 {var} 模板变量解析**：即使提示词/空上下文里出现 {context} 字面量，
         也不会被当成模板变量报 KeyError（参考此前 RERANK_MIN_SCORE 过滤导致
@@ -206,6 +208,7 @@ class PsychologyRAG:
             low_relevance=not context,
             system_prompt_override=system_prompt_override,
             prompt_id=prompt_id,
+            user_id=user_id,
         )
 
         if messages:
@@ -229,6 +232,7 @@ class PsychologyRAG:
         prompt_id: Optional[str] = None,
         timings: Optional[Dict] = None,
         messages: Optional[List[Dict]] = None,
+        user_id: Optional[str] = None,
     ) -> Dict:
         """基于检索到的内容生成回答
 
@@ -236,9 +240,10 @@ class PsychologyRAG:
         便于前端在不落盘的情况下预览/对比不同提示词的效果。
         prompt_id：指定使用提示词库中的某条提示词（与 override 互斥，override 优先）。
         messages：多轮对话历史；提供时会把完整历史拼入 prompt，question 仅用于检索与日志。
+        user_id：当前用户（提示词归属解析）。
         """
         prompt_messages = self._build_messages(
-            question, context, system_prompt_override, prompt_id, messages
+            question, context, system_prompt_override, prompt_id, messages, user_id
         )
 
         # 生成回答（LLM 调用是主要耗时来源，单独计时）
@@ -260,13 +265,14 @@ class PsychologyRAG:
         system_prompt_override: Optional[str] = None,
         prompt_id: Optional[str] = None,
         messages: Optional[List[Dict]] = None,
+        user_id: Optional[str] = None,
     ):
         """流式生成：与 generate 相同的提示词组装，逐 token 产出文本块（async generator）。
 
         供 /api/query/stream（SSE）使用：检索已由 prepare 完成，这里只做生成。
         """
         prompt_messages = self._build_messages(
-            question, context, system_prompt_override, prompt_id, messages
+            question, context, system_prompt_override, prompt_id, messages, user_id
         )
         async for chunk in self.llm.astream(prompt_messages):
             content = chunk.content if hasattr(chunk, "content") else str(chunk)
@@ -281,13 +287,14 @@ class PsychologyRAG:
         prompt_id: Optional[str] = None,
         timings: Optional[Dict] = None,
         messages: Optional[List[Dict]] = None,
+        user_id: Optional[str] = None,
     ) -> Dict:
         """同步执行完整的RAG流程"""
         # 检索
         context = self.retrieve(question, timings=timings)
 
         # 生成
-        result = self.generate(question, context, system_prompt_override, prompt_id, timings=timings, messages=messages)
+        result = self.generate(question, context, system_prompt_override, prompt_id, timings=timings, messages=messages, user_id=user_id)
 
         return {
             "question": question,
