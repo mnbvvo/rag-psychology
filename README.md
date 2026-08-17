@@ -16,13 +16,13 @@ pip install -r requirements.txt
 Copy-Item .env.example .env
 
 # 3. 导入知识库（把 JSONL 换成你自己的文件）
-python scripts/import_cards.py "C:\Users\Thunderobot\Desktop\knowledge_base_automation\out\output_cards.jsonl" --reset
+python scripts/import_cards.py "你自己的文件" --reset
 
 # 4. 启动
 python -m uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-启动后访问 `http://127.0.0.1:8000/docs`。
+启动后访问 `http://127.0.0.1:8000`。
 
 ## 项目结构
 
@@ -307,7 +307,7 @@ compare_history：AB 测试记录，用来对比两套大模型返回结果
 | `PUT` | `/api/system-prompt` | 更新提示词库（`prompts` / `activeId` / `add` / `update` / `deleteId`） |
 | `POST` | `/api/system-prompt/reset` | 还原为出厂默认库（清空 `prompts` 表重新 seed） |
 
-### `persist` 开关（一个曾踩坑的修复点）
+### `persist`
 
 `/api/query` 的 `persist` 参数（默认 `true`）：
 

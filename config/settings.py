@@ -96,7 +96,7 @@ class Settings:
     EMBED_CACHE_SIZE = 2048
 
     # ============ 限流（仅 POST /api/query，内存级；多进程部署需改用共享存储） ============
-    RATE_LIMIT_TIMES = 20  # 时间窗内单客户端最大请求数
+    RATE_LIMIT_TIMES = 2000  # 时间窗内单客户端最大请求数
     RATE_LIMIT_SECONDS = 60  # 限流时间窗长度（秒）
 
     # ============ 服务配置（心理应用含危机内容，默认只绑本机，避免暴露到局域网） ============
