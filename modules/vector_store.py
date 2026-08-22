@@ -1,13 +1,12 @@
 """
-向量存储和检索模块
-基于Chroma实现心理学知识的存储和检索
+向量存储和检索模块（双后端：pgvector / chroma）
+基于 PostgreSQL + pgvector（生产）或 Chroma（本地原型）实现心理学知识的存储和检索。
 """
 import time
 import threading
 from collections import OrderedDict
 from typing import List, Optional, Dict
 from langchain_openai import OpenAIEmbeddings
-from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from config.settings import settings
 
@@ -80,7 +79,7 @@ class TimedOpenAIEmbeddings(OpenAIEmbeddings):
 
 
 class PsychologyVectorStore:
-    """心理学向量存储"""
+    """心理学向量存储（pgvector / chroma 双后端，接口一致）"""
 
     def __init__(
         self,
@@ -90,6 +89,7 @@ class PsychologyVectorStore:
     ):
         self.collection_name = collection_name or settings.COLLECTION_NAME
         self.persist_directory = persist_directory or settings.CHROMA_PERSIST_DIR
+        self.backend = settings.VECTOR_BACKEND
 
         # 初始化OpenAI Embeddings（子类化以实现 embedding 耗时统计）
         self.embeddings = TimedOpenAIEmbeddings(
@@ -103,13 +103,50 @@ class PsychologyVectorStore:
             max_retries=2,    # 瞬时网络/限流错误自动重试
         )
 
-        # 初始化Chroma向量存储
+        if self.backend == "pgvector":
+            self._init_pgvector()
+        else:
+            self._init_chroma()
+
+    # ---------------- 后端初始化 ----------------
+    def _init_chroma(self):
+        """Chroma 后端（本地原型 / 迁移前兜底）。"""
+        from langchain_chroma import Chroma
+
         self.vectorstore = Chroma(
             collection_name=self.collection_name,
             embedding_function=self.embeddings,
             persist_directory=self.persist_directory,
         )
 
+    def _pg_connection(self) -> str:
+        url = settings.PGVECTOR_URL or settings.DB_URL
+        if not url.startswith("postgresql"):
+            raise RuntimeError(
+                f"VECTOR_BACKEND=pgvector 需要 PostgreSQL 连接串，当前为 {url}。"
+                "请配置 DB_BACKEND=postgres 或 PGVECTOR_URL"
+            )
+        return url
+
+    def _init_pgvector(self):
+        """PostgreSQL + pgvector 后端（生产）。"""
+        try:
+            from langchain_postgres import PGVector
+
+            self.vectorstore = PGVector(
+                embeddings=self.embeddings,
+                collection_name=self.collection_name,
+                connection=self._pg_connection(),
+                embedding_length=settings.VECTOR_DIMENSION,
+                use_jsonb=True,
+                create_extension=True,  # 自动 CREATE EXTENSION IF NOT EXISTS vector
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"PGVector 初始化失败（请确认 pgvector 扩展已安装、数据库可连接）: {e}"
+            ) from e
+
+    # ---------------- 通用接口 ----------------
     def add_documents(
         self,
         documents: List[Document],
@@ -120,7 +157,7 @@ class PsychologyVectorStore:
             return []
 
         stored_ids = self.vectorstore.add_documents(documents, ids=ids)
-        print(f"成功写入 {len(stored_ids)} 个文档到向量存储")
+        print(f"成功写入 {len(stored_ids)} 个文档到向量存储（{self.backend}）")
         return stored_ids
 
     def similarity_search_with_relevance_scores(
@@ -155,16 +192,57 @@ class PsychologyVectorStore:
 
     def delete_collection(self):
         """清空并重新创建当前集合。"""
-        self.vectorstore.reset_collection()
-        print(f"已重建集合: {self.collection_name}")
+        if self.backend == "pgvector":
+            self._delete_pg_collection()
+        else:
+            self.vectorstore.reset_collection()
+        print(f"已重建集合（{self.backend}）: {self.collection_name}")
+
+    def _delete_pg_collection(self):
+        """删除 pgvector 中当前 collection 及其全部 embedding（级联）。"""
+        from sqlalchemy import create_engine, text as sql_text
+
+        engine = create_engine(self._pg_connection(), future=True)
+        with engine.begin() as conn:
+            conn.execute(
+                sql_text(
+                    "DELETE FROM langchain_pg_collection WHERE name = :n"
+                ),
+                {"n": self.collection_name},
+            )
+        engine.dispose()
+        # 重新初始化（重建 collection 记录）
+        self._init_pgvector()
 
     def get_collection_stats(self) -> Dict:
         """获取集合统计信息"""
+        if self.backend == "pgvector":
+            from sqlalchemy import create_engine, text as sql_text
+
+            engine = create_engine(self._pg_connection(), future=True)
+            with engine.connect() as conn:
+                count = conn.execute(
+                    sql_text(
+                        "SELECT COUNT(*) FROM langchain_pg_embedding e "
+                        "JOIN langchain_pg_collection c ON e.collection_id = c.uuid "
+                        "WHERE c.name = :n"
+                    ),
+                    {"n": self.collection_name},
+                ).scalar() or 0
+            engine.dispose()
+            return {
+                "collection_name": self.collection_name,
+                "document_count": count,
+                "backend": self.backend,
+                "connection": self._pg_connection(),
+            }
+
         count = self.vectorstore._collection.count()
         return {
             "collection_name": self.collection_name,
             "document_count": count,
             "persist_directory": self.persist_directory,
+            "backend": self.backend,
         }
 
     def as_retriever(self, k: int = None, search_type: str = "similarity"):
@@ -185,3 +263,39 @@ class PsychologyVectorStore:
                 search_type="similarity",
                 search_kwargs={"k": k}
             )
+
+
+def _all_documents_from_store() -> List[Document]:
+    """从当前向量库读取全量文档（混合检索 BM25 索引构建用）。
+
+    后端无关：pgvector 直接查 embedding 表；chroma 走 _collection.get。
+    """
+    store = PsychologyVectorStore()
+    if store.backend == "pgvector":
+        from sqlalchemy import create_engine, text as sql_text
+
+        engine = create_engine(store._pg_connection(), future=True)
+        docs: List[Document] = []
+        with engine.connect() as conn:
+            rows = conn.execute(
+                sql_text(
+                    "SELECT e.document, e.cmetadata FROM langchain_pg_embedding e "
+                    "JOIN langchain_pg_collection c ON e.collection_id = c.uuid "
+                    "WHERE c.name = :n"
+                ),
+                {"n": store.collection_name},
+            ).fetchall()
+            for doc_text, meta in rows:
+                docs.append(
+                    Document(page_content=doc_text or "", metadata=meta or {})
+                )
+        engine.dispose()
+        return docs
+
+    data = store.vectorstore._collection.get(include=["documents", "metadatas"])
+    docs = data.get("documents") or []
+    metas = data.get("metadatas") or []
+    return [
+        Document(page_content=text or "", metadata=meta or {})
+        for text, meta in zip(docs, metas)
+    ]

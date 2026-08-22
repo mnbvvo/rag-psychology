@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>扑克牌双重 N-back 游戏</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", Segoe UI, sans-serif;
+    background: radial-gradient(circle at 50% 0%, #14925a 0%, #0b6e3b 45%, #074a28 100%);
+    color: #f5f7f5;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px 12px 40px;
+  }
+  h1 { font-size: 22px; font-weight: 700; letter-spacing: 1px; margin-bottom: 4px; }
+  .sub { font-size: 13px; opacity: .8; margin-bottom: 18px; text-align: center; }
+  .panel {
+    width: 100%;
+    max-width: 560px;
+    background: rgba(255,255,255,.07);
+    border: 1px solid rgba(255,255,255,.15);
+    border-radius: 16px;
+    padding: 22px;
+    backdrop-filter: blur(4px);
+  }
+  .hidden { display: none !important; }
+
+  /* ---------- 配置页 ---------- */
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-size: 14px; margin-bottom: 6px; opacity: .9; }
+  .field input[type=number] {
+    width: 100%; padding: 10px 12px; font-size: 16px;
+    border-radius: 10px; border: 1px solid rgba(255,255,255,.25);
+    background: rgba(0,0,0,.25); color: #fff;
+  }
+  .field input[type=number]:focus { outline: 2px solid #4fd1a5; border-color: transparent; }
+  .hint { font-size: 12px; opacity: .65; margin-top: 4px; }
+  .checkrow { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  .checkrow input { width: 16px; height: 16px; }
+  .err { color: #ffd166; font-size: 13px; min-height: 18px; margin-bottom: 8px; }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    border: none; cursor: pointer; font-size: 16px; font-weight: 600;
+    border-radius: 12px; padding: 12px 18px; transition: transform .08s, filter .15s;
+  }
+  .btn:active { transform: scale(.97); }
+  .btn-primary { background: linear-gradient(135deg,#4fd1a5,#2bb673); color: #063; width: 100%; }
+  .btn-primary:hover { filter: brightness(1.05); }
+  .btn-ghost { background: rgba(255,255,255,.12); color: #fff; }
+  .btn-ghost:hover { background: rgba(255,255,255,.2); }
+
+  /* ---------- 游戏页 ---------- */
+  .topbar { display:flex; justify-content: space-between; align-items:center; margin-bottom: 12px; }
+  .phase { font-size: 14px; font-weight: 600; padding: 4px 12px; border-radius: 999px; }
+  .phase.mem { background: rgba(79,209,165,.2); color: #9ff0d2; }
+  .phase.judge { background: rgba(255,209,102,.22); color: #ffe39a; }
+  .progress { font-size: 13px; opacity: .85; }
+
+  .cardstage { display:flex; flex-direction: column; align-items:center; gap: 14px; min-height: 200px; justify-content: center; }
+  .card {
+    width: 110px; height: 154px; border-radius: 12px; background: #fff;
+    position: relative; color: #1a1a1a; box-shadow: 0 8px 20px rgba(0,0,0,.35);
+    display:flex; flex-direction:column; justify-content: space-between; padding: 8px 10px;
+  }
+  .card.red { color: #d4203a; }
+  .card .corner { font-size: 20px; font-weight: 700; line-height: 1; display:flex; flex-direction:column; align-items:flex-start; }
+  .card .corner.bottom { align-self: flex-end; transform: rotate(180deg); }
+  .card .center { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size: 46px; }
+  .card.mini { width: 64px; height: 90px; border-radius: 8px; padding: 5px 6px; }
+  .card.mini .corner { font-size: 13px; }
+  .card.mini .center { font-size: 28px; }
+  .card.ref { opacity: .9; outline: 2px dashed rgba(255,255,255,.5); outline-offset: 3px; }
+
+  .refarea { display:flex; align-items:center; gap: 10px; font-size: 12px; opacity:.85; }
+  .refarea .vs { font-size: 18px; font-weight:700; }
+
+  .timerwrap { width: 100%; height: 10px; background: rgba(0,0,0,.3); border-radius: 6px; overflow: hidden; margin: 6px 0 4px; }
+  .timerbar { height: 100%; width: 100%; background: #2ecc71; transition: width .05s linear, background .2s; }
+  .timertext { font-size: 12px; text-align:center; opacity:.8; min-height: 16px; }
+
+  .choices { display:flex; gap: 10px; margin-top: 6px; }
+  .choice {
+    flex:1; cursor:pointer; border: 1px solid rgba(255,255,255,.25);
+    background: rgba(255,255,255,.1); color:#fff; border-radius: 12px; padding: 14px 6px;
+    text-align:center; transition: background .12s, transform .08s;
+  }
+  .choice:hover:not(:disabled) { background: rgba(79,209,165,.25); }
+  .choice:active:not(:disabled) { transform: scale(.97); }
+  .choice:disabled { cursor: default; opacity: .55; }
+  .choice .k { font-size: 20px; font-weight: 800; display:block; }
+  .choice .d { font-size: 12px; opacity:.85; }
+
+  .feedback { text-align:center; font-size: 16px; font-weight: 600; min-height: 24px; margin-top: 10px; }
+  .feedback.ok { color: #7ef0b0; }
+  .feedback.bad { color: #ff9b9b; }
+
+  .nextbtn { margin-top: 12px; width: 100%; }
+  .legend { font-size: 12px; opacity:.7; text-align:center; margin-top: 10px; line-height:1.5; }
+
+  /* ---------- 结果页 ---------- */
+  .score { text-align:center; margin-bottom: 16px; }
+  .score .num { font-size: 48px; font-weight: 800; color: #ffe39a; }
+  .score .lbl { font-size: 13px; opacity:.8; }
+  .seq { display:flex; flex-wrap:wrap; gap: 6px; justify-content:center; margin: 12px 0 18px; }
+  table { width:100%; border-collapse: collapse; font-size: 13px; }
+  th, td { border: 1px solid rgba(255,255,255,.18); padding: 7px 6px; text-align:center; }
+  th { background: rgba(255,255,255,.1); font-weight:600; }
+  td .mc { display:inline-flex; vertical-align:middle; }
+  .ok-mark { color:#7ef0b0; font-weight:700; }
+  .bad-mark { color:#ff9b9b; font-weight:700; }
+  .result-actions { display:flex; gap:10px; margin-top: 18px; }
+  .result-actions .btn { flex:1; }
+  .scrollwrap { max-height: 320px; overflow:auto; margin-top: 6px; }
+  .scrollwrap::-webkit-scrollbar { width: 8px; }
+  .scrollwrap::-webkit-scrollbar-thumb { background: rgba(255,255,255,.25); border-radius: 4px; }
+</style>
+</head>
+<body>
+  <h1>🃏 扑克牌双重 N-back</h1>
+  <div class="sub">依次记牌，从指定位置起将当前牌与「往前数第 N 张」比较花色/点数</div>
+
+  <!-- 配置页 -->
+  <div class="panel" id="configPanel">
+    <div class="field">
+      <label for="totalInput">每局总牌数</label>
+      <input type="number" id="totalInput" value="10" min="2" max="52">
+      <div class="hint">范围 2 ~ 52，前 N 张仅展示不判断。</div>
+    </div>
+    <div class="field">
+      <label for="nInput">N（往前比较的间隔）</label>
+      <input type="number" id="nInput" value="2" min="1" max="51">
+      <div class="hint">必须 &lt; 总牌数。</div>
+    </div>
+    <div class="field">
+      <div class="checkrow">
+        <input type="checkbox" id="showRef">
+        <label for="showRef" style="margin:0;">显示「第 N 张前的参考牌」（降低难度，关闭则为记忆挑战）</label>
+      </div>
+    </div>
+    <div class="err" id="cfgErr"></div>
+    <button class="btn btn-primary" id="startBtn">开始游戏</button>
+  </div>
+
+  <!-- 游戏页 -->
+  <div class="panel hidden" id="gamePanel">
+    <div class="topbar">
+      <span class="phase" id="phaseTag">记忆阶段</span>
+      <span class="progress" id="progressText">第 1 / 10 张</span>
+    </div>
+
+    <div class="timerwrap hidden" id="timerWrap"><div class="timerbar" id="timerBar"></div></div>
+    <div class="timertext hidden" id="timerText"></div>
+
+    <div class="cardstage">
+      <div id="cardArea"></div>
+      <div class="refarea hidden" id="refArea"></div>
+    </div>
+
+    <div class="choices hidden" id="choices">
+      <button class="choice" data-ch="A"><span class="k">A</span><span class="d">花色相同</span></button>
+      <button class="choice" data-ch="B"><span class="k">B</span><span class="d">点数相同</span></button>
+    </div>
+
+    <div class="feedback" id="feedback"></div>
+    <button class="btn btn-primary nextbtn hidden" id="nextBtn">下一张 →</button>
+
+    <div class="legend">
+      判断规则：A=花色相同 · B=点数相同。<br>
+      花色与点数都相同时，选 A 或 B 均算正确。
+    </div>
+  </div>
+
+  <!-- 结果页 -->
+  <div class="panel hidden" id="resultPanel">
+    <div class="score">
+      <div class="num" id="scoreNum">0%</div>
+      <div class="lbl" id="scoreLbl">正确率</div>
+    </div>
+
+    <div style="font-size:13px;opacity:.85;margin-bottom:4px;">本局牌序（从上到下依次出现）：</div>
+    <div class="seq" id="seqArea"></div>
+
+    <div style="font-size:14px;font-weight:600;margin: 8px 0;">对比记录</div>
+    <div class="scrollwrap">
+      <table id="resultTable"></table>
+    </div>
+
+    <div class="result-actions">
+      <button class="btn btn-ghost" id="replayBtn">再来一局（相同设置）</button>
+      <button class="btn btn-primary" id="backBtn">修改设置</button>
+    </div>
+  </div>
+
+<script>
+  const SUITS = [
+    { sym:'♠', name:'桃', red:false },
+    { sym:'♥', name:'杏', red:true },
+    { sym:'♣', name:'梅', red:false },
+    { sym:'♦', name:'芳', red:true },
+  ];
+  // 点数：1~13 = A,2..10,J,Q,K
+  function rankLabel(r){
+    return r===1?'A':r===11?'J':r===12?'Q':r===13?'K':String(r);
+  }
+  function randInt(n){ return Math.floor(Math.random()*n); }
+  function randSuitExcept(s){ let x; do { x = randInt(4); } while(x===s); return x; }
+  function randRankExcept(r){ let x; do { x = randInt(13)+1; } while(x===r); return x; }
+  function randomSuited(){ return { suit: randInt(4), rank: randInt(13)+1 }; }
+
+  // ---- 状态 ----
+  let cfg = { total:10, N:2, showRef:false };
+  let deck = [];
+  let cur = 0;
+  let records = [];
+  let timerId = null;
+  let answered = false;
+
+  // ---- DOM ----
+  const $ = id => document.getElementById(id);
+  const configPanel = $('configPanel');
+  const gamePanel = $('gamePanel');
+  const resultPanel = $('resultPanel');
+
+  function cardHTML(c, cls=''){
+    const s = SUITS[c.suit];
+    const lab = rankLabel(c.rank);
+    return `<div class="card ${s.red?'red':''} ${cls}">
+      <div class="corner">${lab}<span>${s.sym}</span></div>
+      <div class="center">${s.sym}</div>
+      <div class="corner bottom">${lab}<span>${s.sym}</span></div>
+    </div>`;
+  }
+
+  function getRelation(a,b){
+    const s = a.suit===b.suit, r = a.rank===b.rank;
+    if(s && r) return { type:'both', choices:['A','B'], text:'A 或 B（花色与点数都相同）' };
+    if(s)       return { type:'suit', choices:['A'],     text:'A（花色相同）' };
+    if(r)       return { type:'rank', choices:['B'],     text:'B（点数相同）' };
+    return            { type:'none', choices:[],         text:'（完全不一样）' };
+  }
+
+  // ---- 配置 -> 开始 ----
+  $('startBtn').onclick = () => {
+    const total = parseInt($('totalInput').value, 10);
+    const N = parseInt($('nInput').value, 10);
+    const err = $('cfgErr');
+    if(!Number.isInteger(total) || total < 2 || total > 52){ err.textContent='总牌数需为整数且 2 ~ 52。'; return; }
+    if(!Number.isInteger(N) || N < 1){ err.textContent='N 需为整数且 ≥ 1。'; return; }
+    if(N >= total){ err.textContent='N 必须小于总牌数。'; return; }
+    err.textContent='';
+    cfg = { total, N, showRef: $('showRef').checked };
+    startGame();
+  };
+
+  function startGame(){
+    // 构造式发牌：保证每对比较牌至少「花色同」或「点数同」其一，
+    // 使 A/B 两种选项始终有正确答（完全一样时 A 或 B 均算对）。
+    deck = [];
+    for(let i=0;i<Math.min(cfg.N, cfg.total);i++){
+      deck.push(randomSuited());
+    }
+    for(let i=cfg.N;i<cfg.total;i++){
+      const base = deck[i - cfg.N];
+      const t = Math.random();
+      if(t < 0.2){
+        deck.push({ suit: base.suit, rank: base.rank });               // 完全一样
+      } else if(t < 0.6){
+        deck.push({ suit: base.suit, rank: randRankExcept(base.rank) }); // 仅花色同
+      } else {
+        deck.push({ suit: randSuitExcept(base.suit), rank: base.rank });  // 仅点数同
+      }
+    }
+    records = [];
+    cur = 0;
+    configPanel.classList.add('hidden');
+    resultPanel.classList.add('hidden');
+    gamePanel.classList.remove('hidden');
+    showCard(0);
+  }
+
+  function showCard(i){
+    cur = i;
+    answered = false;
+    clearInterval(timerId);
+    $('feedback').textContent = '';
+    $('feedback').className = 'feedback';
+    $('nextBtn').classList.add('hidden');
+    const isJudge = i >= cfg.N;
+    const phaseTag = $('phaseTag');
+    const choices = $('choices');
+    const timerWrap = $('timerWrap');
+    const timerText = $('timerText');
+    const refArea = $('refArea');
+
+    $('progressText').textContent = `第 ${i+1} / ${cfg.total} 张`;
+
+    // 渲染当前牌
+    $('cardArea').innerHTML = cardHTML(deck[i]);
+
+    if(!isJudge){
+      phaseTag.textContent = '记忆阶段';
+      phaseTag.className = 'phase mem';
+      choices.classList.add('hidden');
+      timerWrap.classList.add('hidden');
+      timerText.classList.add('hidden');
+      refArea.classList.add('hidden');
+      $('nextBtn').classList.remove('hidden');
+      $('nextBtn').textContent = `下一张 →（还剩 ${cfg.N - i} 张记忆）`;
+    } else {
+      phaseTag.textContent = '判断阶段 · 4 秒内作答';
+      phaseTag.className = 'phase judge';
+      choices.classList.remove('hidden');
+      timerWrap.classList.remove('hidden');
+      timerText.classList.remove('hidden');
+      // 重置按钮
+      document.querySelectorAll('.choice').forEach(b => { b.disabled = false; });
+      // 参考牌
+      if(cfg.showRef){
+        refArea.classList.remove('hidden');
+        const back = deck[i - cfg.N];
+        refArea.innerHTML = cardHTML(back,'mini ref') + `<span class="vs">← 第 ${i - cfg.N + 1} 张</span>`;
+      } else {
+        refArea.classList.add('hidden');
+      }
+      startTimer();
+    }
+  }
+
+  function startTimer(){
+    answered = false;
+    const DURATION = 4000;
+    const t0 = performance.now();
+    const bar = $('timerBar');
+    const txt = $('timerText');
+    timerId = setInterval(() => {
+      const elapsed = performance.now() - t0;
+      const remain = Math.max(0, DURATION - elapsed);
+      const ratio = remain / DURATION;
+      bar.style.width = (ratio*100) + '%';
+      bar.style.background = ratio > 0.5 ? '#2ecc71' : ratio > 0.25 ? '#f39c12' : '#e74c3c';
+      txt.textContent = (remain/1000).toFixed(1) + ' 秒';
+      if(remain <= 0){
+        clearInterval(timerId);
+        handleTimeout();
+      }
+    }, 40);
+  }
+
+  // 点击作答
+  document.querySelectorAll('.choice').forEach(btn => {
+    btn.onclick = () => {
+      if(answered) return;
+      answered = true;
+      clearInterval(timerId);
+      resolve(btn.dataset.ch, false);
+    };
+  });
+
+  function handleTimeout(){
+    if(answered) return;
+    answered = true;
+    resolve(null, true);
+  }
+
+  function resolve(userChoice, timedOut){
+    document.querySelectorAll('.choice').forEach(b => b.disabled = true);
+    const a = deck[cur];
+    const b = deck[cur - cfg.N];
+    const rel = getRelation(a,b);
+    const correct = !timedOut && rel.choices.includes(userChoice);
+    records.push({ idx: cur, a, b, rel, userChoice, timedOut, correct });
+
+    const fb = $('feedback');
+    if(correct){
+      fb.className = 'feedback ok';
+      fb.textContent = '✓ 回答正确！';
+    } else {
+      fb.className = 'feedback bad';
+      fb.textContent = (timedOut ? '⏱ 超时（4 秒），' : '✗ 回答错误，') + '正确答案：' + rel.text;
+    }
+    // 自动进入下一张
+    setTimeout(() => {
+      if(cur + 1 < cfg.total) showCard(cur + 1);
+      else showResults();
+    }, 2200);
+  }
+
+  $('nextBtn').onclick = () => {
+    if(cur + 1 < cfg.total) showCard(cur + 1);
+    else showResults();
+  };
+
+  // ---- 结果 ----
+  function showResults(){
+    clearInterval(timerId);
+    gamePanel.classList.add('hidden');
+    resultPanel.classList.remove('hidden');
+
+    const totalJudge = records.length;
+    const correctCnt = records.filter(r => r.correct).length;
+    const acc = totalJudge ? (correctCnt / totalJudge * 100) : 0;
+    $('scoreNum').textContent = acc.toFixed(1) + '%';
+    $('scoreLbl').textContent = `正确率（${correctCnt} / ${totalJudge} 张判断牌）`;
+
+    // 牌序
+    $('seqArea').innerHTML = deck.map((c,i)=> cardHTML(c,'mini') + `<span style="font-size:11px;opacity:.6;align-self:center;">${i+1}</span>`).join('');
+
+    // 表格
+    let rows = '';
+    rows += '<tr><th>第几张<br>(当前)</th><th>当前牌</th><th>对比牌<br>(第'+(cfg.N===1?'前1':cfg.N)+'张前)</th><th>正确关系</th><th>你的选择</th><th>结果</th></tr>';
+    records.forEach(r => {
+      const chTxt = r.timedOut ? '超时' : (r.userChoice==='A'?'A（花色相同）':'B（点数相同）');
+      const mark = r.correct ? '<span class="ok-mark">✓</span>' : '<span class="bad-mark">✗</span>';
+      rows += `<tr>
+        <td>${r.idx+1}</td>
+        <td><div class="mc">${cardHTML(r.a,'mini')}</div></td>
+        <td><div class="mc">${cardHTML(r.b,'mini')}</div></td>
+        <td style="font-size:12px;">${r.rel.text}</td>
+        <td>${chTxt}</td>
+        <td>${mark}</td>
+      </tr>`;
+    });
+    $('resultTable').innerHTML = rows;
+  }
+
+  $('replayBtn').onclick = () => { resultPanel.classList.add('hidden'); startGame(); };
+  $('backBtn').onclick = () => {
+    resultPanel.classList.add('hidden');
+    configPanel.classList.remove('hidden');
+  };
+</script>
+</body>
+</html>

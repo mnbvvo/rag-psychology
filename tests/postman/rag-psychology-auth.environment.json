@@ -1,0 +1,21 @@
+{
+  "id": "3a6f0e8d-4b7a-4c5d-9e2f-1a8b3c4d5e6f",
+  "name": "rag-psychology-auth",
+  "values": [
+    { "key": "baseUrl", "value": "http://127.0.0.1:8000", "type": "default", "enabled": true },
+    { "key": "adminPassword", "value": "123456789", "type": "secret", "enabled": true },
+    { "key": "userA", "value": "", "type": "default", "enabled": true },
+    { "key": "userB", "value": "", "type": "default", "enabled": true },
+    { "key": "tokenA", "value": "", "type": "secret", "enabled": true },
+    { "key": "tokenB", "value": "", "type": "secret", "enabled": true },
+    { "key": "tokenAdmin", "value": "", "type": "secret", "enabled": true },
+    { "key": "userAId", "value": "", "type": "default", "enabled": true },
+    { "key": "userBId", "value": "", "type": "default", "enabled": true },
+    { "key": "sessionIdA", "value": "", "type": "default", "enabled": true },
+    { "key": "promptIdA", "value": "", "type": "default", "enabled": true },
+    { "key": "compareIdA", "value": "", "type": "default", "enabled": true }
+  ],
+  "_postman_variable_scope": "environment",
+  "_postman_exported_at": "2026-08-17T15:40:00.000Z",
+  "_postman_exported_using": "WorkBuddy"
+}

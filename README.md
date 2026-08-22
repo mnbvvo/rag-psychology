@@ -2,7 +2,7 @@
 
 本地运行的检索增强生成（RAG）系统，面向青少年及家庭心理知识问答。知识以结构化「卡片」形式入库，检索后由大模型基于卡片内容生成回答，并内置关键词级危机干预检测。
 
-技术栈：FastAPI + LangChain + Chroma（本地持久化向量库）+ OpenAI 兼容接口（默认使用通义千问 / DashScope 兼容模式）。
+技术栈：FastAPI + LangChain + PostgreSQL（关系库）+ pgvector（向量库，生产）/ Chroma（本地原型）+ OpenAI 兼容接口（默认使用通义千问 / DashScope 兼容模式）。
 
 ## 快速开始
 
@@ -34,8 +34,9 @@ modules/                RAG 核心、向量库封装、安全检测、提示词�
 frontend/               纯静态前端页面（系统提示词管理，由 FastAPI 托管）
 scripts/import_cards.py 离线 JSONL 卡片导入
 data/                  运行时生成的数据目录（已被 .gitignore 忽略）：
-                         - data/chroma/             本地向量库（Chroma）
-                         - data/rag_psychology.sqlite3  关系库（SQLite）
+                         - data/chroma/             旧本地向量库（Chroma，回退选项）
+                         - data/rag_psychology.sqlite3  旧关系库（SQLite，回退选项）
+                         - 生产数据存 PostgreSQL：关系表 + pgvector 向量表（见「关系型数据库」章节）
 test_rag.py             端到端自测脚本
 requirements.txt        Python 依赖
 ```
@@ -258,28 +259,54 @@ huggingface-cli download BAAI/bge-reranker-v2-m3 --local-dir "data/rerank_models
 
 依赖：`sentence-transformers` + torch（有 NVIDIA GPU 建议装 CUDA 版：`pip install torch --index-url https://download.pytorch.org/whl/cu124`，重排从秒级降到几十毫秒）。相关配置见 `config/settings.py` 的「本地重排序」一节：`RERANK_ENABLED` / `RERANK_MODEL` / `RERANK_DEVICE` / `RERANK_BATCH_SIZE` / `RERANK_MAX_LENGTH` / `RERANK_MIN_SCORE`（可选最低分数护栏，默认 0=不启用；bge 分数 0~1，本项目实测相关约 0.4+、无关 <0.15，建议 0.2~0.3 起试；低于阈值的候选被丢弃，全部丢弃时回答会提示"没有足够信息"防编造）。
 
-## 本地向量库
+## 向量库（pgvector / Chroma 双后端）
 
-- 向量由 `EMBEDDING_MODEL` 生成，文档来自 JSONL 结构化卡片（一卡一文档），持久化在 `data/chroma/`（统一收在 data/ 下），重启后仍可用。
-- 重建：先 `--reset` 再重新导入。
+- 向量由 `EMBEDDING_MODEL` 生成，文档来自 JSONL 结构化卡片（一卡一文档）。
+- **pgvector（生产，默认）**：向量存 PostgreSQL 的 `langchain_pg_embedding` 表，检索走 pgvector 余弦相似度；
+- **Chroma（本地原型）**：持久化在 `data/chroma/`，由 `VECTOR_BACKEND=chroma` 切换；
+- 重建：先 `--reset` 再重新导入（`scripts/import_cards.py --reset`）。
 
 > ⚠️ 向量与 `EMBEDDING_MODEL` 绑定：更换 embedding 模型后旧向量会**静默失效**（不报错但检索质量崩坏），必须 `--reset` 重新导入。
 
-## 关系型数据库（SQLite）
+## 关系型数据库（SQLite / PostgreSQL 双后端）
 
 本项目有**两层持久化**，分工明确：
 
-- **Chroma（向量库）**：只负责语义检索——把知识卡片向量化、按相似度召回相关片段。
-- **SQLite（关系库）**：只负责结构化留痕——会话 / 消息 / 危机审计 / 提示词库 / 对比历史。文件为 `data/rag_psychology.sqlite3`（单文件、零部署）。
+- **向量库**：只负责语义检索——把知识卡片向量化、按相似度召回相关片段（pgvector / Chroma）。
+- **关系库**：只负责结构化留痕——用户 / 会话 / 消息 / 危机审计 / 提示词库 / 对比历史。
+  - SQLite（默认本地原型）：`data/rag_psychology.sqlite3`（单文件、零部署）；
+  - **PostgreSQL（生产推荐）**：`.env` 配置 `DB_BACKEND=postgres` + `PG_*` 连接参数，SQLAlchemy 抽象，**业务代码无需改动**。
 
-两者互不替代：RAG 检索走 Chroma，对话记录与配置走 SQLite。未来若要上多 worker / 生产环境，把 `settings.DB_URL` 改成 `mysql+pymysql://user:pwd@host/db` 即可，**业务代码无需改动**（SQLAlchemy 已做抽象）。
+两者互不替代：RAG 检索走向量库，对话记录与配置走关系库。
+
+### 从 SQLite + Chroma 迁移到 PostgreSQL + pgvector
+
+前置：PostgreSQL 已安装 **pgvector 扩展**（Windows 需管理员复制 `vector.dll` 到 PG 的 `lib/` 与 `share/extension/` 并重启服务；Linux 用 `CREATE EXTENSION vector`）。
+
+```bash
+# 1) 配置 .env（.env.example 有完整字段）
+#    DB_BACKEND=postgres  PG_HOST/PORT/USER/PASSWORD/DB  VECTOR_BACKEND=pgvector
+
+# 2) 执行全量迁移（关系数据 6 表 + 257 条知识向量，复用原向量不重新 embedding）
+python scripts/migrate_to_postgres.py
+# 输出 MIGRATION OK，逐表校验新旧行数一致
+
+# 3) 启动
+python -m uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+> 回退：`.env` 改回 `DB_BACKEND=sqlite` + `VECTOR_BACKEND=chroma` 即回 SQLite 模式，旧数据未动。
 
 ### 配置
 
 | 配置项 | 位置 | 默认值 | 说明 |
 |---|---|---|---|
-| `DB_PATH` | `config/settings.py` | `data/rag_psychology.sqlite3` | 库文件相对项目根的路径 |
-| `DB_URL` | `config/settings.py` | `sqlite:///<DB_PATH>` | SQLAlchemy 连接串 |
+| `DB_BACKEND` | `.env` | `sqlite` | `sqlite` 本地原型 / `postgres` 生产 |
+| `PG_HOST/PORT/USER/PASSWORD/DB` | `.env` | `127.0.0.1/5432/postgres/空/rag_psychology` | PostgreSQL 连接参数 |
+| `VECTOR_BACKEND` | `.env` | `pgvector` | `pgvector` 生产 / `chroma` 本地 |
+| `PGVECTOR_URL` | `.env` | 空 | 向量库独立连接串；留空复用 `DB_URL` |
+| `VECTOR_DIMENSION` | `.env` | `1024` | 向量维度（text-embedding-v3=1024） |
+| `DB_URL` | `config/settings.py` | 动态 | SQLAlchemy 连接串（按 DB_BACKEND 自动生成） |
 
 > 文件后缀曾为 `.db`，后统一改为 `.sqlite3`（两者格式完全相同，仅命名习惯）。`.gitignore` 已忽略整个 `data/` 目录（同时覆盖 `data/chroma/` 向量库与 `*.db`/`*.sqlite3` 关系库），两库均不会被提交；备份请用 `data/` 整体拷贝。
 
@@ -381,7 +408,7 @@ Copy-Item data/rag_psychology.sqlite3 data/rag_psychology.backup.sqlite3
 Remove-Item data/rag_psychology.sqlite3
 ```
 
-> 切换 embedding 模型**不影响** SQLite；它只与 Chroma 向量绑定。SQLite 的提示词 / 会话数据可独立于知识库长期留存。
+> 切换 embedding 模型**不影响**关系库（SQLite / PostgreSQL）；它只与向量库绑定（pgvector / Chroma）。提示词 / 会话数据可独立于知识库长期留存。
 
 ## 测试
 

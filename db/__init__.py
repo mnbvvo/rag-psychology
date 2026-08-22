@@ -1,12 +1,13 @@
-"""关系型数据库初始化（SQLAlchemy + SQLite）。
+"""关系型数据库初始化（SQLAlchemy，双后端：SQLite / PostgreSQL）。
 
-与 Chroma 向量库互补：Chroma 负责语义检索（向量），本模块负责结构化
-持久化（用户 / 会话 / 消息 / 危机审计 / 提示词库 / 对比历史）。
-使用 SQLAlchemy 抽象，未来切换到 MySQL 仅需修改 settings.DB_URL，
-业务代码无需改动。
+与向量库互补：本模块负责结构化持久化（用户 / 会话 / 消息 / 危机审计 /
+提示词库 / 对比历史），向量检索由 pgvector（或 Chroma）负责。
+使用 SQLAlchemy 抽象，切换数据库仅需修改 settings.DB_URL，业务代码无需改动。
+
+- SQLite：单文件、零部署，本地原型默认；
+- PostgreSQL：生产 / 多 worker 推荐（DB_BACKEND=postgres，.env 配置 PG_*）。
 """
 import os
-import uuid
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine, text
@@ -31,13 +32,29 @@ LEGACY_USERNAME = "legacy"
 _USER_TABLES = ("sessions", "prompts", "compare_history", "crisis_audit")
 
 
+def _table_columns(table: str) -> set[str]:
+    """数据库无关的表列名查询（SQLite 用 PRAGMA，PostgreSQL 用 information_schema）。"""
+    with engine.connect() as conn:
+        if _is_sqlite(settings.DB_URL):
+            rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+            return {str(row[1]) for row in rows}
+        rows = conn.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = :t"
+            ),
+            {"t": table.lower()},
+        ).fetchall()
+        return {str(row[0]) for row in rows}
+
+
 def _migrate_crisis_audit_columns() -> None:
-    """SQLite 轻量迁移：老库为 crisis_audit 补充 detect_method / confidence 列。
+    """轻量迁移：老库为 crisis_audit 补充 detect_method / confidence 列。
 
     create_all 只会建新表、不会给已存在的表加列，因此对老库需要显式 ALTER。
     """
     with engine.connect() as conn:
-        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(crisis_audit)"))}
+        cols = _table_columns("crisis_audit")
         if "detect_method" not in cols:
             conn.execute(text("ALTER TABLE crisis_audit ADD COLUMN detect_method VARCHAR(20)"))
         if "confidence" not in cols:
@@ -53,7 +70,7 @@ def _migrate_user_columns() -> None:
     """
     with engine.connect() as conn:
         for table in _USER_TABLES:
-            cols = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
+            cols = _table_columns(table)
             if "user_id" not in cols:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN user_id VARCHAR(36)"))
         conn.commit()
@@ -102,7 +119,7 @@ def ensure_bootstrap_users() -> None:
 
 
 def init_db() -> None:
-    """幂等创建所有表，并确保 SQLite 文件所在目录存在。"""
+    """幂等创建所有表；SQLite 额外确保文件目录存在。"""
     if _is_sqlite(settings.DB_URL):
         db_path = settings.DB_URL.replace("sqlite:///", "", 1)
         parent = os.path.dirname(db_path)
@@ -111,13 +128,12 @@ def init_db() -> None:
     # 触发模型注册（必须在 create_all 之前导入）
     from . import models  # noqa: F401
     models.Base.metadata.create_all(bind=engine)
-    # 老库轻量迁移（仅 SQLite 支持 PRAGMA / ALTER 语义）
-    if _is_sqlite(settings.DB_URL):
-        try:
-            _migrate_crisis_audit_columns()
-            _migrate_user_columns()
-        except Exception as e:
-            print(f"[db][WARN] 列迁移失败（不影响启动）: {e}", flush=True)
+    # 老库轻量迁移（补列，幂等）
+    try:
+        _migrate_crisis_audit_columns()
+        _migrate_user_columns()
+    except Exception as e:
+        print(f"[db][WARN] 列迁移失败（不影响启动）: {e}", flush=True)
     # 引导账号：legacy + 初始管理员（失败不影响启动，仅告警）
     try:
         ensure_bootstrap_users()

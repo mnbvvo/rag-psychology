@@ -68,19 +68,10 @@ def get_hybrid_searcher() -> BM25HybridSearcher:
 
 
 def _docs_from_vectorstore() -> List:
-    """从 Chroma 拉取全量文档用于构建索引。"""
-    from langchain_core.documents import Document
+    """从向量库拉取全量文档用于构建索引（pgvector / chroma 后端无关）。"""
+    from modules.vector_store import _all_documents_from_store
 
-    from modules.vector_store import PsychologyVectorStore
-
-    store = PsychologyVectorStore()
-    data = store.vectorstore._collection.get(include=["documents", "metadatas"])
-    docs = data.get("documents") or []
-    metas = data.get("metadatas") or []
-    return [
-        Document(page_content=text or "", metadata=meta or {})
-        for text, meta in zip(docs, metas)
-    ]
+    return _all_documents_from_store()
 
 
 def keyword_search(query: str, k: Optional[int] = None) -> List:

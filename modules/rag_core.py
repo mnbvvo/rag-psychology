@@ -34,6 +34,8 @@ class PsychologyRAG:
         self.vectorstore = vectorstore
 
         # 初始化LLM（事实/建议类问答，温度偏低以减少幻觉）
+        # enable_thinking 仅流式调用携带：部分兼容接口（如 deepseek-v3.1 非流式）
+        # 对 enable_thinking 报 400（"only support stream call"），非流式用不带该参数的实例。
         self.llm = ChatOpenAI(
             model=settings.CHAT_MODEL,
             openai_api_key=settings.OPENAI_API_KEY,
@@ -42,7 +44,17 @@ class PsychologyRAG:
             max_tokens=4096,
             timeout=30,       # 上游挂起时及时失败，避免请求永久阻塞
             max_retries=2,    # 瞬时网络/限流错误自动重试
-            extra_body={"enable_thinking": settings.ENABLE_THINKING},  # 思考/推理模式开关
+        )
+        # 流式实例：保留 enable_thinking（思考/推理模式开关，仅流式接口支持）
+        self.llm_stream = ChatOpenAI(
+            model=settings.CHAT_MODEL,
+            openai_api_key=settings.OPENAI_API_KEY,
+            base_url=settings.OPENAI_API_BASE,
+            temperature=settings.CHAT_TEMPERATURE,
+            max_tokens=4096,
+            timeout=30,
+            max_retries=2,
+            extra_body={"enable_thinking": settings.ENABLE_THINKING},
         )
 
     def retrieve(
@@ -248,8 +260,18 @@ class PsychologyRAG:
 
         # 生成回答（LLM 调用是主要耗时来源，单独计时）
         t0 = time.perf_counter()
-        msg = self.llm.invoke(prompt_messages)
-        answer = msg.content if hasattr(msg, "content") else str(msg)
+        if settings.ENABLE_THINKING:
+            # 所有模型统一开启思考模式：deepseek 兼容接口非流式不支持 enable_thinking
+            # （报 400 "only support stream call"），故同步接口内部走「同步流式」收集
+            # 完整内容——与流式接口（llm_stream）同一实例、同一思考参数，行为一致。
+            answer = ""
+            for chunk in self.llm_stream.stream(prompt_messages):
+                content = chunk.content if hasattr(chunk, "content") else str(chunk)
+                if content:
+                    answer += content
+        else:
+            msg = self.llm.invoke(prompt_messages)
+            answer = msg.content if hasattr(msg, "content") else str(msg)
         if timings is not None:
             timings["llm"] = (time.perf_counter() - t0) * 1000
 
@@ -274,7 +296,7 @@ class PsychologyRAG:
         prompt_messages = self._build_messages(
             question, context, system_prompt_override, prompt_id, messages, user_id
         )
-        async for chunk in self.llm.astream(prompt_messages):
+        async for chunk in self.llm_stream.astream(prompt_messages):
             content = chunk.content if hasattr(chunk, "content") else str(chunk)
             if content:
                 yield content

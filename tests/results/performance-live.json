@@ -1,0 +1,134 @@
+[
+  {
+    "concurrency": 1,
+    "endpoint": "/api/system-prompt",
+    "requests": 1288,
+    "errors": 0,
+    "avg": 4.7,
+    "p95": 6.0,
+    "p99": 7.7,
+    "rps": 214.7,
+    "ttft": 0
+  },
+  {
+    "concurrency": 1,
+    "endpoint": "/api/query",
+    "requests": 2,
+    "errors": 0,
+    "avg": 3175.2,
+    "p95": 3524.5,
+    "p99": 3524.5,
+    "rps": 0.3,
+    "ttft": 0
+  },
+  {
+    "concurrency": 1,
+    "endpoint": "/api/query/stream",
+    "requests": 2,
+    "errors": 0,
+    "avg": 5473.0,
+    "p95": 5891.7,
+    "p99": 5891.7,
+    "rps": 0.3,
+    "ttft": 13.6
+  },
+  {
+    "concurrency": 2,
+    "endpoint": "/api/system-prompt",
+    "requests": 1426,
+    "errors": 0,
+    "avg": 8.4,
+    "p95": 9.6,
+    "p99": 11.4,
+    "rps": 237.7,
+    "ttft": 0
+  },
+  {
+    "concurrency": 2,
+    "endpoint": "/api/query",
+    "requests": 6,
+    "errors": 0,
+    "avg": 2781.5,
+    "p95": 2977.6,
+    "p99": 2977.6,
+    "rps": 1.0,
+    "ttft": 0
+  },
+  {
+    "concurrency": 2,
+    "endpoint": "/api/query/stream",
+    "requests": 4,
+    "errors": 0,
+    "avg": 5225.0,
+    "p95": 5449.5,
+    "p99": 5449.5,
+    "rps": 0.7,
+    "ttft": 17.2
+  },
+  {
+    "concurrency": 5,
+    "endpoint": "/api/system-prompt",
+    "requests": 1537,
+    "errors": 0,
+    "avg": 19.5,
+    "p95": 22.6,
+    "p99": 24.2,
+    "rps": 256.2,
+    "ttft": 0
+  },
+  {
+    "concurrency": 5,
+    "endpoint": "/api/query",
+    "requests": 15,
+    "errors": 0,
+    "avg": 2610.0,
+    "p95": 3147.7,
+    "p99": 3147.7,
+    "rps": 2.5,
+    "ttft": 0
+  },
+  {
+    "concurrency": 5,
+    "endpoint": "/api/query/stream",
+    "requests": 9,
+    "errors": 0,
+    "avg": 5161.6,
+    "p95": 6858.2,
+    "p99": 6858.2,
+    "rps": 1.5,
+    "ttft": 47.2
+  },
+  {
+    "concurrency": 10,
+    "endpoint": "/api/system-prompt",
+    "requests": 1071,
+    "errors": 0,
+    "avg": 56.2,
+    "p95": 130.0,
+    "p99": 204.9,
+    "rps": 178.5,
+    "ttft": 0
+  },
+  {
+    "concurrency": 10,
+    "endpoint": "/api/query",
+    "requests": 24,
+    "errors": 0,
+    "avg": 3022.2,
+    "p95": 3572.2,
+    "p99": 3610.3,
+    "rps": 4.0,
+    "ttft": 0
+  },
+  {
+    "concurrency": 10,
+    "endpoint": "/api/query/stream",
+    "requests": 19,
+    "errors": 0,
+    "avg": 5369.3,
+    "p95": 6521.5,
+    "p99": 6521.5,
+    "rps": 3.2,
+    "ttft": 68.3
+  }
+]

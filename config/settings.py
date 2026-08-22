@@ -42,7 +42,7 @@ class Settings:
     CHAT_MODEL = os.getenv("CHAT_MODEL", "qwen3.6-flash")  # 对话生成模型
 
     # 向量化模型（与向量库绑定：换模型后旧向量静默失效，必须 --reset 重导）
-    EMBEDDING_MODEL = "text-embedding-v3"
+    EMBEDDING_MODEL = "text-embedding-v4"
 
     # 思考/推理模式（仅部分 OpenAI 兼容模型支持，如 Qwen3 / DeepSeek；端点不支持时请把下面的值改为 False，否则可能报 400）
     ENABLE_THINKING = True  # 是否在请求体注入 enable_thinking 控制思考模式
@@ -122,10 +122,28 @@ class Settings:
     # 默认由本服务同源托管前端，无需跨域；留空则仅允许本服务自身 origin，切勿用 "*"）
     CORS_ORIGINS = [f"http://{HOST}:{PORT}", f"http://localhost:{PORT}"]
 
-    # ============ 关系型数据库（结构化持久化：会话 / 消息 / 危机审计；与向量库 Chroma 互补） ============
-    # 默认 SQLite（单文件、零部署）；生产/多 worker 可改为 mysql+pymysql://user:pwd@host/db
+    # ============ 关系型数据库（结构化持久化：会话 / 消息 / 危机审计） ============
+    # 双后端：默认 SQLite（单文件、零部署，本地原型）；配置 PG_* 后自动切换 PostgreSQL。
+    # 生产/多 worker 推荐 PostgreSQL：DB_BACKEND=postgres 时使用 postgresql+psycopg 驱动。
+    DB_BACKEND = os.getenv("DB_BACKEND", "sqlite")  # sqlite | postgres
+    PG_HOST = os.getenv("PG_HOST", "127.0.0.1")
+    PG_PORT = int(os.getenv("PG_PORT", "5432"))
+    PG_USER = os.getenv("PG_USER", "postgres")
+    PG_PASSWORD = os.getenv("PG_PASSWORD", "")
+    PG_DB = os.getenv("PG_DB", "rag_psychology")
+
     _DB_PATH = _resolve_path("data/rag_psychology.sqlite3", _PROJECT_ROOT)
-    DB_URL = f"sqlite:///{_DB_PATH.replace('\\', '/')}"
+    if DB_BACKEND == "postgres":
+        DB_URL = f"postgresql+psycopg://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DB}"
+    else:
+        DB_URL = f"sqlite:///{_DB_PATH.replace('\\', '/')}"
+
+    # ============ 向量库（语义检索） ============
+    # 双后端：pgvector（生产，向量存 PostgreSQL）| chroma（本地原型，data/chroma/）。
+    # PGVECTOR_URL 独立连接串；留空则复用 DB_URL（DB_BACKEND=postgres 时）。
+    VECTOR_BACKEND = os.getenv("VECTOR_BACKEND", "pgvector")  # pgvector | chroma
+    PGVECTOR_URL = os.getenv("PGVECTOR_URL", "")
+    VECTOR_DIMENSION = int(os.getenv("VECTOR_DIMENSION", "1024"))  # 向量维度（text-embedding-v3 = 1024）
 
     # 项目根目录
     PROJECT_ROOT = _PROJECT_ROOT
@@ -135,6 +153,8 @@ class Settings:
         """验证必要配置"""
         if not cls.OPENAI_API_KEY:
             raise ValueError("OPENAI_API_KEY 未设置，请在 .env 文件中配置")
+        if cls.VECTOR_BACKEND == "pgvector" and not cls.PGVECTOR_URL and cls.DB_BACKEND != "postgres":
+            raise ValueError("VECTOR_BACKEND=pgvector 需要 PostgreSQL：请配置 DB_BACKEND=postgres 或 PGVECTOR_URL")
         return True
 
 

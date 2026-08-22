@@ -27,3 +27,8 @@ bcrypt>=4.0.0
 # 有 NVIDIA GPU 建议装 CUDA 版（python -m pip install torch --index-url https://download.pytorch.org/whl/cu124）
 sentence-transformers>=3.0.0
 
+# PostgreSQL + pgvector（生产数据库：关系库 SQLAlchemy + 向量库 LangChain PGVector）
+psycopg2-binary>=2.9.0
+pgvector>=0.2.0
+langchain-postgres>=0.0.15
+

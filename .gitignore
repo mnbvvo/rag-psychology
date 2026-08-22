@@ -17,3 +17,5 @@ system_prompt.json
 
 # 运行时生成的数据目录（统一收口在 data/）
 data/
+# PostgreSQL 备份文件（运行时产物，不入库）
+backups/

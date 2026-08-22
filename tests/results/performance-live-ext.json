@@ -1,0 +1,167 @@
+[
+  {
+    "concurrency": 1,
+    "endpoint": "/api/system-prompt",
+    "requests": 440,
+    "errors": 0,
+    "avg": 18.2,
+    "p95": 28.1,
+    "p99": 49.7,
+    "rps": 55.0,
+    "ttft": 0
+  },
+  {
+    "concurrency": 1,
+    "endpoint": "/api/query",
+    "requests": 3,
+    "errors": 0,
+    "avg": 3005.6,
+    "p95": 3275.6,
+    "p99": 3275.6,
+    "rps": 0.4,
+    "ttft": 0
+  },
+  {
+    "concurrency": 1,
+    "endpoint": "/api/query/stream",
+    "requests": 1,
+    "errors": 0,
+    "avg": 9145.7,
+    "p95": 9145.7,
+    "p99": 9145.7,
+    "rps": 0.1,
+    "ttft": 97.0
+  },
+  {
+    "concurrency": 5,
+    "endpoint": "/api/system-prompt",
+    "requests": 420,
+    "errors": 0,
+    "avg": 95.5,
+    "p95": 249.5,
+    "p99": 405.7,
+    "rps": 52.5,
+    "ttft": 0
+  },
+  {
+    "concurrency": 5,
+    "endpoint": "/api/query",
+    "requests": 15,
+    "errors": 0,
+    "avg": 2873.2,
+    "p95": 3148.7,
+    "p99": 3148.7,
+    "rps": 1.9,
+    "ttft": 0
+  },
+  {
+    "concurrency": 5,
+    "endpoint": "/api/query/stream",
+    "requests": 10,
+    "errors": 0,
+    "avg": 6775.6,
+    "p95": 9490.5,
+    "p99": 9490.5,
+    "rps": 1.2,
+    "ttft": 26.3
+  },
+  {
+    "concurrency": 10,
+    "endpoint": "/api/system-prompt",
+    "requests": 1794,
+    "errors": 0,
+    "avg": 44.7,
+    "p95": 110.0,
+    "p99": 138.6,
+    "rps": 224.2,
+    "ttft": 0
+  },
+  {
+    "concurrency": 10,
+    "endpoint": "/api/query",
+    "requests": 31,
+    "errors": 0,
+    "avg": 2798.7,
+    "p95": 3066.9,
+    "p99": 3121.3,
+    "rps": 3.9,
+    "ttft": 0
+  },
+  {
+    "concurrency": 10,
+    "endpoint": "/api/query/stream",
+    "requests": 20,
+    "errors": 0,
+    "avg": 6949.9,
+    "p95": 9528.7,
+    "p99": 9528.7,
+    "rps": 2.5,
+    "ttft": 32.9
+  },
+  {
+    "concurrency": 20,
+    "endpoint": "/api/system-prompt",
+    "requests": 1374,
+    "errors": 0,
+    "avg": 116.9,
+    "p95": 251.9,
+    "p99": 322.2,
+    "rps": 171.8,
+    "ttft": 0
+  },
+  {
+    "concurrency": 20,
+    "endpoint": "/api/query",
+    "requests": 61,
+    "errors": 0,
+    "avg": 2887.0,
+    "p95": 3480.1,
+    "p99": 3560.2,
+    "rps": 7.6,
+    "ttft": 0
+  },
+  {
+    "concurrency": 20,
+    "endpoint": "/api/query/stream",
+    "requests": 28,
+    "errors": 0,
+    "avg": 8255.2,
+    "p95": 10174.4,
+    "p99": 10209.0,
+    "rps": 3.5,
+    "ttft": 175.8
+  },
+  {
+    "concurrency": 50,
+    "endpoint": "/api/system-prompt",
+    "requests": 1326,
+    "errors": 0,
+    "avg": 305.3,
+    "p95": 433.9,
+    "p99": 496.2,
+    "rps": 165.8,
+    "ttft": 0
+  },
+  {
+    "concurrency": 50,
+    "endpoint": "/api/query",
+    "requests": 133,
+    "errors": 0,
+    "avg": 3664.9,
+    "p95": 5546.2,
+    "p99": 5839.4,
+    "rps": 16.6,
+    "ttft": 0
+  },
+  {
+    "concurrency": 50,
+    "endpoint": "/api/query/stream",
+    "requests": 50,
+    "errors": 0,
+    "avg": 10171.6,
+    "p95": 11749.4,
+    "p99": 13147.7,
+    "rps": 6.2,
+    "ttft": 2521.5
+  }
+]

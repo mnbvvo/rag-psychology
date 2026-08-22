@@ -1,4 +1,8 @@
-"""将知识卡片 JSONL 离线写入本地 Chroma 向量库。"""
+"""将知识卡片 JSONL 离线写入当前向量库（pgvector / Chroma，取决于 VECTOR_BACKEND）。
+
+- VECTOR_BACKEND=pgvector（默认/生产）：写入 PostgreSQL 的 langchain_pg_embedding 表；
+- VECTOR_BACKEND=chroma（本地原型）：写入 data/chroma/。
+"""
 import argparse
 import json
 import sys
@@ -113,10 +117,10 @@ def load_documents(path: Path, review_status: str | None) -> tuple[list[Document
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="离线导入知识卡片到本地 Chroma")
+    parser = argparse.ArgumentParser(description="离线导入知识卡片到当前向量库（pgvector / Chroma）")
     parser.add_argument("cards_path", type=Path, help="output_cards.jsonl 的绝对路径")
     parser.add_argument("--review-status", help="只导入指定审核状态，例如 approved")
-    parser.add_argument("--reset", action="store_true", help="先删除当前 Chroma 集合")
+    parser.add_argument("--reset", action="store_true", help="先删除当前向量库集合再导入（避免重复）")
     parser.add_argument("--batch-size", type=int, default=50)
     args = parser.parse_args()
 
@@ -139,7 +143,11 @@ def main() -> None:
         store.add_documents(batch_documents, ids=batch_ids)
         print(f"已写入 {min(offset + len(batch_documents), len(documents))}/{len(documents)} 张卡片")
 
-    print(f"导入完成：{len(documents)} 张卡片，向量库位于 {store.persist_directory}")
+    # 完成信息按后端给出实际落库位置（pgvector 显示连接；chroma 显示本地目录）
+    if store.backend == "pgvector":
+        print(f"导入完成：{len(documents)} 张卡片，向量已写入 pgvector（{store._pg_connection()} · {store.collection_name}）")
+    else:
+        print(f"导入完成：{len(documents)} 张卡片，向量库位于 {store.persist_directory}")
 
 
 if __name__ == "__main__":
