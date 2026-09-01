@@ -150,6 +150,16 @@ class QueryRequest(BaseModel):
         description="是否将本轮对话持久化到关系库（sessions/messages）。对话联调页应保留默认 true；"
         "提示词对比页请传 false，避免对比用的临时问答被写入会话表、泄漏到历史对话列表。",
     )
+    rag_enabled: Optional[bool] = Field(
+        None,
+        description="是否启用检索增强生成（RAG）。None=用全局配置 settings.RAG_ENABLED；"
+        "false=跳过检索，纯 LLM 对话；true=完整 RAG。",
+    )
+    safety_enabled: Optional[bool] = Field(
+        None,
+        description="是否启用安全检测（L0 关键词 + L1 语义 + 回答侧复查）。"
+        "None=用全局配置 settings.SAFETY_ENABLED；false=跳过整条安全链路（仅限联调/实验，生产保持 true）。",
+    )
 
     @model_validator(mode="after")
     def check_question_or_messages(self):
@@ -221,10 +231,11 @@ async def query(request: QueryRequest, current_user=Depends(get_current_user)):
             rag_system.query,
             question=request.question,
             messages=request.messages,
-            check_safety=True,
+            check_safety=request.safety_enabled,
             system_prompt_override=request.system_prompt_override,
             prompt_id=request.prompt_id,
             user_id=current_user.id,
+            rag_enabled=request.rag_enabled,
         )
 
         # —— 持久化到关系库（会话 + 危机审计，归属当前用户） ——
@@ -280,6 +291,16 @@ async def query(request: QueryRequest, current_user=Depends(get_current_user)):
             except Exception as e:
                 print(f"[persist][WARN] 会话持久化失败（回答已正常返回）: {e}", flush=True)
 
+            # 长期记忆落库（向量检索式）：本轮问答 + embedding 写入 user_chat_history，
+            # 供后续提问检索相似历史。独立于会话持久化，失败不影响回答。
+            if settings.MEMORY_ENABLED:
+                try:
+                    from modules.memory import memory_service
+
+                    memory_service.save_turn(current_user.id, current_question, answer)
+                except Exception as e:
+                    print(f"[memory][WARN] 长期记忆落库失败: {e}", flush=True)
+
         return QueryResponse(
             answer=answer,
             sources=result.get("sources") or [],
@@ -324,10 +345,11 @@ async def query_stream(stream_request: Request, request: QueryRequest, current_u
                 rag_system.prepare,
                 question=request.question,
                 messages=request.messages,
-                check_safety=True,
+                check_safety=request.safety_enabled,
                 system_prompt_override=request.system_prompt_override,
                 prompt_id=request.prompt_id,
                 user_id=current_user.id,
+                rag_enabled=request.rag_enabled,
             )
             if prep.get("is_crisis_response"):
                 # 高危拦截同样写会话与危机审计（此前缺失：前端对话页走的就是 stream，
@@ -390,8 +412,10 @@ async def query_stream(stream_request: Request, request: QueryRequest, current_u
                     break
             answer = "".join(full)
             # 回答侧安全复查：命中高危关键词时追加安全提醒（token 已发，追加部分随 done 的 answer 下发）
+            # 受 safety_enabled 开关控制：关闭时跳过复查（与 /api/query 行为一致）
             ans_check = None
-            answer, ans_check = rag_system.safety_checker.review_answer(answer)
+            if request.safety_enabled is not False and settings.SAFETY_ENABLED:
+                answer, ans_check = rag_system.safety_checker.review_answer(answer)
             # 生成耗时（从流式调用开始到结束）与全流程总耗时，供前端耗时栏展示
             timings["llm"] = (time.perf_counter() - t_gen) * 1000
             timings["total"] = (time.perf_counter() - t_total) * 1000
@@ -434,6 +458,16 @@ async def query_stream(stream_request: Request, request: QueryRequest, current_u
                             )
                 except Exception as e:
                     print(f"[persist][WARN] 会话持久化失败（回答已正常返回）: {e}", flush=True)
+
+                # 长期记忆落库（向量检索式）：本轮问答 + embedding 写入 user_chat_history，
+                # 供后续提问检索相似历史。独立于会话持久化，失败不影响回答。
+                if settings.MEMORY_ENABLED:
+                    try:
+                        from modules.memory import memory_service
+
+                        memory_service.save_turn(current_user.id, prep.get("question", ""), answer)
+                    except Exception as e:
+                        print(f"[memory][WARN] 长期记忆落库失败: {e}", flush=True)
 
             yield _sse("done", {
                 "answer": answer,

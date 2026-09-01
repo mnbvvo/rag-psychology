@@ -303,6 +303,14 @@ function renderTimings(timings, elapsed) {
   if (!timings && elapsed == null) return "";
   const parts = [];
   if (timings) {
+    // RAG 关闭时前端明确提示（检索/嵌入等阶段无意义）
+    if (timings.rag_enabled === false) {
+      parts.push(`RAG 关`);
+    }
+    // 安全检测关闭时提示（仅联调/实验场景）
+    if (timings.safety_enabled === false) {
+      parts.push(`安全 关`);
+    }
     parts.push(`嵌入 ${formatMs(timings.embed)}`);
     parts.push(`检索 ${formatMs(timings.retrieve)}`);
     if (timings.hybrid != null) parts.push(`混合 ${formatMs(timings.hybrid)}`);
@@ -910,6 +918,9 @@ async function sendChat(content) {
     // 多轮记忆：历史 = 除占位外的全部消息（占位尚未有内容，不应发给后端）
     const history = session.messages
       .filter((m) => m !== placeholder)
+      // 过滤中断残留的空占位（content="" 的 assistant 消息）与空内容消息，
+      // 避免发给后端触发 422（messages[i].content 不能为空）
+      .filter((m) => typeof m.content === "string" && m.content.trim() !== "")
       .map((m) => ({ role: m.role, content: m.content }));
     const body = { messages: history, session_id: session.id };
     if (state.chatPromptId) body.prompt_id = state.chatPromptId;

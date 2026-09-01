@@ -164,9 +164,11 @@ class PsychologyRAG:
         return docs
 
     def compress_messages(self, messages: List[Dict]) -> List[Dict]:
-        """对话历史压缩：保留最近 MAX_HISTORY_TURNS 轮，对更早历史做摘要。
+        """【已废弃】对话历史压缩：保留最近 MAX_HISTORY_TURNS 轮，对更早历史做摘要。
 
-        每轮约 2 条消息（human + ai）。摘要失败时直接截断，保证可用性。
+        已由向量检索式长期记忆（modules.memory.MemoryService）取代 —— 旧方案把
+        多轮历史全量拼入 prompt，超限部分每次请求调 LLM 做摘要，对话越多耗时/token
+        递增。当前 _build_messages 不再调用本方法，仅保留作回退参考。
         """
         max_turns = settings.MAX_HISTORY_TURNS
         if max_turns <= 0 or len(messages) <= max_turns * 2:
@@ -206,6 +208,10 @@ class PsychologyRAG:
         """组装直接传给 LLM 的消息列表（generate 与 stream_generate 共用）。
 
         user_id：当前用户（提示词按用户隔离的解析基础，见 prompt_store.build_system_prompt）。
+        messages：归一化后的多轮历史（含当前问题，见 rag_system._normalize）。
+        本方法同时承载两条记忆通道：
+        - 跨会话长期记忆（向量检索，注入 system prompt）；
+        - 本会话最近 N 轮原文（human/ai 交替插入，解决指代消解）。
         直接返回消息元组列表交给 llm.invoke/astream，**绕过 ChatPromptTemplate
         的 {var} 模板变量解析**：即使提示词/空上下文里出现 {context} 字面量，
         也不会被当成模板变量报 KeyError（参考此前 RERANK_MIN_SCORE 过滤导致
@@ -223,18 +229,39 @@ class PsychologyRAG:
             user_id=user_id,
         )
 
-        if messages:
-            compressed = self.compress_messages(messages)
-            prompt_messages = [("system", system_prompt)]
-            for m in compressed:
-                role = m.get("role", "")
-                # 兼容 human/ai 与 user/assistant 两种角色命名，避免历史被静默丢弃
-                if role in ("human", "user"):
-                    prompt_messages.append(("human", m["content"]))
-                elif role in ("ai", "assistant"):
-                    prompt_messages.append(("ai", m["content"]))
-            return prompt_messages
-        return [("system", system_prompt), ("human", question)]
+        # 长期记忆（双通道）：
+        # 通道一（跨会话·向量检索）：相似历史注入 system prompt，召回成本恒定。
+        # 通道二（本会话·最近 N 轮）：messages 中除当前问题外的最近
+        #   MEMORY_RECENT_ROUNDS 轮原文，按时间顺序插入 system 之后、当前问题
+        #   之前——解决指代消解（"那个方法""刚才说的"等指代词向量检索不到，
+        #   只能靠最近几轮原文）；轮数由 settings.MEMORY_RECENT_ROUNDS 控制。
+        if settings.MEMORY_ENABLED and user_id:
+            try:
+                from modules.memory import memory_service
+
+                mem_text = memory_service.build_context(question, user_id)
+                if mem_text:
+                    system_prompt = f"{system_prompt}\n\n{mem_text}"
+            except Exception as e:
+                print(f"[memory][WARN] 记忆上下文注入失败，忽略: {e}", flush=True)
+
+        prompt_messages = [("system", system_prompt)]
+        if settings.MEMORY_RECENT_ROUNDS > 0 and messages:
+            # messages 的最后一条是当前问题（_normalize 保证），跳过它取历史；
+            # 1 轮 = 一问一答 2 条消息，取最近 N 轮
+            history = messages[:-1][-settings.MEMORY_RECENT_ROUNDS * 2:]
+            for m in history:
+                role = (m.get("role") or "").lower()
+                content = (m.get("content") or "").strip()
+                if not content:
+                    continue  # 防御：跳过空内容占位消息
+                if role in ("user", "human"):
+                    prompt_messages.append(("human", content))
+                elif role in ("assistant", "ai"):
+                    prompt_messages.append(("assistant", content))
+                # 其他 role 忽略（防御：不注入未知角色）
+        prompt_messages.append(("human", question))
+        return prompt_messages
 
     def generate(
         self,

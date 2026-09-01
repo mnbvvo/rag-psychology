@@ -37,15 +37,26 @@ class Settings:
     """系统配置类"""
 
     # ============ 接口与模型（唯一从 .env 读取的部分） ============
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")  # 必填：OpenAI 兼容接口密钥
-    OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")  # 兼容模式基地址
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")  # 必填：OpenAI 兼容接口密钥（LLM 对话用）
+    OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")  # 兼容模式基地址（LLM）
     CHAT_MODEL = os.getenv("CHAT_MODEL", "qwen3.6-flash")  # 对话生成模型
 
-    # 向量化模型（与向量库绑定：换模型后旧向量静默失效，必须 --reset 重导）
-    EMBEDDING_MODEL = "text-embedding-v4"
+    # ============ 向量化模型（可独立于 LLM 配置 API 端点/密钥） ============
+    # 默认回退到 LLM 同一套（EMBEDDING_API_* 未设置时沿用 OPENAI_*），
+    # 需要 embedding 与回答走不同服务商时，在 .env 里单独覆盖即可。
+    # 注意：embedding 模型与向量库绑定，换模型后旧向量静默失效，必须重导。
+    EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY", "")  # 独立密钥；未设置回退 OPENAI_API_KEY
+    EMBEDDING_API_BASE = os.getenv("EMBEDDING_API_BASE") or os.getenv("OPENAI_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")  # 独立基地址；未设置回退 OPENAI_API_BASE
+    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v4")
 
     # 思考/推理模式（仅部分 OpenAI 兼容模型支持，如 Qwen3 / DeepSeek；端点不支持时请把下面的值改为 False，否则可能报 400）
-    ENABLE_THINKING = True  # 是否在请求体注入 enable_thinking 控制思考模式
+    ENABLE_THINKING = False  # 是否在请求体注入 enable_thinking 控制思考模式
+
+    # ============ RAG 检索增强生成开关 ============
+    # True：走完整 RAG（安全检测 + 向量/混合检索 + 重排 + 生成）；
+    # False：跳过检索，context 为空，直接让 LLM 基于提示词回答（纯对话模式）。
+    # 可通过请求参数 rag_enabled 按次覆盖（None 时用此全局值）。
+    RAG_ENABLED = False
 
     # ============ RAG 检索（路径锚定到项目根目录，避免 cwd 不同导致找不到文件/库） ============
     CHROMA_PERSIST_DIR = _resolve_path("data/chroma", _PROJECT_ROOT)  # 本地向量库持久化目录（统一收在 data/ 下）
@@ -75,12 +86,30 @@ class Settings:
     # ============ 生成参数 ============
     CHAT_TEMPERATURE = 0.3  # 生成温度，事实/建议类问答偏低以减少幻觉
 
-    # ============ 多轮对话记忆 ============
-    MAX_HISTORY_TURNS = 5  # 保留最近多少轮对话；超过则对更早的历史做摘要压缩
+    # ============ 长期记忆（向量检索式） ============
+    # 方案：每轮问答落库 user_chat_history 并打双向量（query 向量 + qa 向量，
+    # qa = query+answer 拼接，检索主用）；提问时用当前问题向量检索该用户
+    # 相似历史（fn_search_chat_history，余弦相似度 top_k）注入 system prompt。
+    # 替代旧的「全量拼接历史」——检索成本恒定，不随历史总量增长，token 开销也固定。
+    MEMORY_ENABLED = True  # 是否启用长期记忆（检索相似历史注入上下文）
+    MEMORY_TOP_K = 5  # 每次注入的相似历史条数（与 fn_search_chat_history 的 LIMIT 一致）
+    MEMORY_MIN_SIMILARITY = 0.3  # 相似度下限（0~1），低于阈值的历史不注入；0=不启用。建议 0.25~0.35 防无关历史
+    MEMORY_EMBEDDING_MODEL = ""  # 记忆用 embedding 模型；留空复用 EMBEDDING_MODEL
+    # 双通道：当前会话最近 N 轮原始对话（human/ai 交替）直接拼入消息列表，
+    # 与跨会话向量记忆互补——解决指代消解（"那个方法""刚才说的"向量检索不到，
+    # 只能靠最近几轮原文）。0=只走向量记忆通道。
+    MEMORY_RECENT_ROUNDS = 6
+
+    # 遗留参数（旧「全量拼接历史」模式使用，已由向量检索式长期记忆取代，保留以兼容引用）
+    MAX_HISTORY_TURNS = 5
 
     # ============ 安全配置（路径锚定到项目根目录，避免 cwd 不同导致找不到文件） ============
+    # 安全总开关：False 时整条安全链路（L0 关键词 + L1 语义 + 回答侧复查）全部跳过，
+    # 不调 embedding、不调安全检测。可通过请求参数 safety_enabled 按次覆盖（None 用此全局值）。
+    # ⚠️ 仅用于联调/对比实验；生产环境应保持 True。
+    SAFETY_ENABLED = False
     CRISIS_KEYWORDS_FILE = _resolve_path("config/crisis_keywords.json", _PROJECT_ROOT)  # 危机关键词 + 等级 + 热线定义文件
-    SAFETY_CHECK_ENABLED = True  # 是否启用关键词级危机检测
+    SAFETY_CHECK_ENABLED = True  # 是否启用关键词级危机检测（SAFETY_ENABLED 之下的 L0 细分开关）
 
     # 语义危机检测（L1：高危意图原型距离）
     # 隐喻表达无限但危险意图有限：种子集（config/high_risk_intents.json）embed 后按意图簇
@@ -96,8 +125,11 @@ class Settings:
     EMBED_CACHE_SIZE = 2048
 
     # ============ 认证与授权（JWT Bearer + bcrypt，RBAC 双角色 user/admin） ============
-    # 密钥类进 .env：JWT_SECRET 生产环境必须用强随机串覆盖（openssl rand -hex 32）
-    JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me-in-env")  # JWT 签名密钥（.env 覆盖）
+    # 安全基线：JWT_SECRET 必须由 .env 提供强随机密钥（≥32 字节），
+    # 无配置 / 仍为旧公开默认值时 validate() 拒绝启动（fail-closed），
+    # 防止退回公开密钥导致任意身份可伪造（含 admin）。
+    # 生成方式：python -c "import secrets;print(secrets.token_urlsafe(48))" 或 openssl rand -hex 32
+    JWT_SECRET = os.getenv("JWT_SECRET", "")  # JWT 签名密钥（必填，.env 覆盖）
     JWT_ALGORITHM = "HS256"  # 签名算法
     JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "120"))  # access token 有效期（分钟）
 
@@ -150,11 +182,16 @@ class Settings:
 
     @classmethod
     def validate(cls):
-        """验证必要配置"""
+        """验证必要配置（fail-closed：缺失/弱配置直接拒绝启动）"""
         if not cls.OPENAI_API_KEY:
             raise ValueError("OPENAI_API_KEY 未设置，请在 .env 文件中配置")
         if cls.VECTOR_BACKEND == "pgvector" and not cls.PGVECTOR_URL and cls.DB_BACKEND != "postgres":
             raise ValueError("VECTOR_BACKEND=pgvector 需要 PostgreSQL：请配置 DB_BACKEND=postgres 或 PGVECTOR_URL")
+        if not cls.JWT_SECRET or len(cls.JWT_SECRET) < 32:
+            raise ValueError(
+                "JWT_SECRET 未配置或强度不足（<32 字节）：拒绝启动以防止公开密钥伪造身份。"
+                "请在 .env 设置强随机密钥：python -c \"import secrets;print(secrets.token_urlsafe(48))\""
+            )
         return True
 
 

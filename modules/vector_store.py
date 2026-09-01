@@ -92,10 +92,11 @@ class PsychologyVectorStore:
         self.backend = settings.VECTOR_BACKEND
 
         # 初始化OpenAI Embeddings（子类化以实现 embedding 耗时统计）
+        # embedding 走独立配置（EMBEDDING_API_*），未单独配置时回退 LLM 同一套
         self.embeddings = TimedOpenAIEmbeddings(
             model=embedding_model or settings.EMBEDDING_MODEL,
-            openai_api_key=settings.OPENAI_API_KEY,
-            base_url=settings.OPENAI_API_BASE,
+            openai_api_key=settings.EMBEDDING_API_KEY,
+            base_url=settings.EMBEDDING_API_BASE,
             tiktoken_enabled=False,
             check_embedding_ctx_length=False,
             chunk_size=10,

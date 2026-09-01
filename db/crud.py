@@ -11,10 +11,10 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-from sqlalchemy import select, desc, func
+from sqlalchemy import select, desc, func, text
 
 from . import SessionLocal
-from .models import User, Session, Message, CrisisAudit, Prompt, CompareHistory
+from .models import User, Session, Message, CrisisAudit, Prompt, CompareHistory, UserChatHistory
 
 
 @contextmanager
@@ -281,3 +281,47 @@ def get_compare_history(db, item_id: int, user_id: str | None = None) -> Compare
     if user_id:
         q = q.where(CompareHistory.user_id == user_id)
     return db.execute(q).scalars().first()
+
+
+# ---------------- 长期记忆（user_chat_history，向量检索式） ----------------
+def add_chat_history(
+    db,
+    user_id: str,
+    query: str,
+    answer: str | None,
+    embedding: list | None,
+    qa_embedding: list | None = None,
+) -> UserChatHistory:
+    """写入一轮问答（含 query 向量与 qa 向量），长期记忆落库。
+
+    维度必须与表定义一致（settings.VECTOR_DIMENSION）；embedding 为 None
+    时只留文本不留向量（该行无法被向量检索命中）。
+    qa_embedding：query+answer 拼接后的向量，检索主用；None 时检索回退
+    到 embedding（兼容存量数据）。
+    """
+    r = UserChatHistory(
+        user_id=user_id, query=query, answer=answer,
+        embedding=embedding, qa_embedding=qa_embedding,
+    )
+    db.add(r)
+    db.flush()
+    return r
+
+
+def search_chat_history(
+    db,
+    user_id: str,
+    query_vector: list,
+    limit: int = 5,
+) -> list[dict]:
+    """向量检索该用户的相似历史（调 fn_search_chat_history，余弦相似度降序）。
+
+    按 user_id 全量检索：该用户所有会话的历史都参与召回（不按会话隔离）。
+    函数内部 LIMIT 5 硬编码，如需更多条需同步修改 scripts/user_chat_history.sql。
+    返回每条含 id/user_id/query/answer/created_at/cosine_similarity。
+    """
+    rows = db.execute(
+        text("SELECT * FROM fn_search_chat_history(:qv, :uid)"),
+        {"qv": json.dumps(query_vector), "uid": user_id},
+    ).fetchall()
+    return [dict(r._mapping) for r in rows[:limit]]

@@ -78,19 +78,26 @@ class PsychologyRAGSystem:
     def prepare(
         self,
         question: str = None,
-        check_safety: bool = True,
+        check_safety: Optional[bool] = None,
         system_prompt_override: Optional[str] = None,
         prompt_id: Optional[str] = None,
         messages: Optional[List[Dict]] = None,
         user_id: Optional[str] = None,
+        rag_enabled: Optional[bool] = None,
     ) -> Dict:
         """安全检测 + 检索（不含生成）。
 
         供 SSE 端点复用：先同步完成 safety + 混合检索 + 重排，返回
         context/sources/safety/timings；高危时 is_crisis_response=True 且
         answer 为危机响应，此时不应再进入生成阶段。
+        rag_enabled：None 用 settings.RAG_ENABLED；False 时跳过检索（context 为空，
+        纯 LLM 对话）；True 走完整 RAG。
+        check_safety：None 用 settings.SAFETY_ENABLED；False 时跳过整条安全链路
+        （L0 关键词 + L1 语义 + 回答侧复查），不调 embedding。
         user_id：当前用户（提示词归属解析，透传至生成阶段）。
         """
+        rag_enabled = settings.RAG_ENABLED if rag_enabled is None else bool(rag_enabled)
+        check_safety = settings.SAFETY_ENABLED if check_safety is None else bool(check_safety)
         norm_messages, current_question = self._normalize(messages, question)
         result = {
             "question": current_question,
@@ -116,6 +123,8 @@ class PsychologyRAGSystem:
         # 多轮兜底：不只看最后一条 human —— 用户可能在某一轮暴露危机信号、
         # 下一轮用指代句（"那该怎么办"）继续，只查最后一条会漏。
         # 对全部 human 轮次逐一检测，取最高等级作为本轮判定（历史高危同样拦截）。
+        timings["safety_enabled"] = check_safety
+        result["safety_enabled"] = check_safety
         if check_safety:
             ts = time.perf_counter()
             emb_query_fn = self.vectorstore.embeddings.embed_query
@@ -144,11 +153,21 @@ class PsychologyRAGSystem:
                 result["timings"] = timings
                 _log_query_timings(current_question, timings, 0)
                 return result
+        else:
+            timings["safety"] = 0
+            timings["embed"] = 0
 
-        # 检索：混合召回 + 重排
-        context = self.rag.retrieve(current_question, timings=timings)
-        result["context"] = context
-        result["sources"] = build_sources(context)
+        # 检索：混合召回 + 重排（RAG 关闭时跳过，context 为空 → 纯 LLM 对话）
+        if rag_enabled:
+            context = self.rag.retrieve(current_question, timings=timings)
+            result["context"] = context
+            result["sources"] = build_sources(context)
+        else:
+            timings["retrieve"] = 0
+            timings["rerank"] = 0
+            timings["hybrid"] = 0
+        timings["rag_enabled"] = rag_enabled
+        result["rag_enabled"] = rag_enabled
         # 中/低危：附带关怀提示
         if check_safety and safety_result.get("is_crisis"):
             result["safety_note"] = safety_result["safety_response"]["message"]
@@ -158,21 +177,25 @@ class PsychologyRAGSystem:
     def query(
         self,
         question: str = None,
-        check_safety: bool = True,
+        check_safety: Optional[bool] = None,
         system_prompt_override: Optional[str] = None,
         prompt_id: Optional[str] = None,
         messages: Optional[List[Dict]] = None,
         user_id: Optional[str] = None,
+        rag_enabled: Optional[bool] = None,
     ) -> Dict:
         """查询系统（同步完整流程：prepare + generate）。
 
         支持单轮 question 或多轮 messages。多轮模式下，从最后一条 human/user
         消息提取当前问题用于检索与安全检测，完整历史传给 LLM 作为上下文。
+        rag_enabled：None 用 settings.RAG_ENABLED；False 跳过检索纯对话。
+        check_safety：None 用 settings.SAFETY_ENABLED；False 跳过整条安全链路。
         user_id：当前用户（提示词归属解析 + 持久化归属）。
         """
         # 全流程墙钟：从 prepare（安全+检索+重排）到生成结束，与 SSE 端点 total 语义一致
         t_query = time.perf_counter()
-        prep = self.prepare(question, check_safety, system_prompt_override, prompt_id, messages, user_id)
+        check_safety = settings.SAFETY_ENABLED if check_safety is None else bool(check_safety)
+        prep = self.prepare(question, check_safety, system_prompt_override, prompt_id, messages, user_id, rag_enabled=rag_enabled)
         timings = prep.get("timings") or {}
 
         # 高危：直接返回危机响应（prepare 内已记录全程 total）

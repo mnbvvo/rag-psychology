@@ -1,17 +1,20 @@
-"""ORM 模型：用户 / 会话 / 消息 / 危机审计。
+"""ORM 模型：用户 / 会话 / 消息 / 危机审计 / 长期记忆。
 
-持久化。六张表：
+持久化。七张表：
 - users          用户账号（登录认证 + RBAC 角色）
 - sessions      一次完整对话（前端一个 tab 对应一个）
 - messages      单条消息（人类提问 / AI 回答），按会话外键聚合
 - crisis_audit  危机命中审计（心理类产品的合规可追溯留痕）
 - prompts       系统提示词模板（按用户隔离）
 - compare_history AB 测试记录（按用户隔离）
+- user_chat_history 长期记忆（每轮问答 + embedding，向量检索相似历史）
 """
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, Integer, DateTime, Boolean, Text, Float, ForeignKey
+from sqlalchemy import String, Integer, BigInteger, DateTime, Boolean, Text, Float, ForeignKey
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from pgvector.sqlalchemy import Vector
+from config.settings import settings
 
 
 def utcnow() -> datetime:
@@ -109,3 +112,32 @@ class CompareHistory(Base):
     result_a: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON 编码的 A 侧结果
     result_b: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON 编码的 B 侧结果
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class UserChatHistory(Base):
+    """长期记忆：用户每轮问答 + 双向量（向量检索相似历史注入上下文）。
+
+    与 sessions/messages 的区别：sessions/messages 是「完整历史留痕」（前端可翻看），
+    本表是「语义记忆」——每轮 query+answer 落库，提问时用当前问题向量检索该用户
+    相似历史 top_k 条注入 prompt，成本恒定、不随历史总量线性增长。
+
+    双向量（qa_embedding 为主）：
+    - embedding：仅 query 的向量（兼容存量数据，保留回退用）
+    - qa_embedding：query + answer 拼接后的向量，检索主用——匹配语义从
+      「问题↔问题」升级为「问题↔问答内容」，用户换措辞也能靠 answer 语义召回。
+    存量行 qa_embedding 为 NULL，由 SQL 函数 COALESCE 回退到 embedding。
+    维度由 settings.VECTOR_DIMENSION 决定（当前 .env 为 text-embedding-v3 → 1024）。
+    """
+
+    __tablename__ = "user_chat_history"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    embedding: Mapped[list | None] = mapped_column(Vector(settings.VECTOR_DIMENSION), nullable=True)
+    qa_embedding: Mapped[list | None] = mapped_column(Vector(settings.VECTOR_DIMENSION), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )

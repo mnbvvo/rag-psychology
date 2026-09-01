@@ -19,7 +19,7 @@ Copy-Item .env.example .env
 python scripts/import_cards.py "你自己的文件" --reset
 
 # 4. 启动
-python -m uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
+python -m uvicorn api.main:app --host 127.0.0.1 --port 8001 --reload
 ```
 
 启动后访问 `http://127.0.0.1:8000`。

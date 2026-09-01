@@ -62,7 +62,8 @@ def table_counts(pg: dict) -> dict:
     try:
         with conn.cursor() as cur:
             tables = ["users", "sessions", "messages", "crisis_audit", "prompts",
-                      "compare_history", "langchain_pg_embedding", "langchain_pg_collection"]
+                      "compare_history", "user_chat_history", "langchain_pg_embedding",
+                      "langchain_pg_collection"]
             counts = {}
             for t in tables:
                 try:
@@ -78,7 +79,7 @@ def table_counts(pg: dict) -> dict:
 
 ALL_TABLES = [
     "messages", "sessions", "crisis_audit", "prompts", "compare_history", "users",
-    "langchain_pg_embedding", "langchain_pg_collection",
+    "user_chat_history", "langchain_pg_embedding", "langchain_pg_collection",
 ]
 
 

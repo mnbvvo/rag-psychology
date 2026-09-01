@@ -138,8 +138,8 @@ def migrate_vectors(old_chroma_path: str, new_url: str, collection: str, dimensi
 
     embeddings = TimedOpenAIEmbeddings(
         model=settings.EMBEDDING_MODEL,
-        openai_api_key=settings.OPENAI_API_KEY,
-        base_url=settings.OPENAI_API_BASE,
+        openai_api_key=settings.EMBEDDING_API_KEY,
+        base_url=settings.EMBEDDING_API_BASE,
         tiktoken_enabled=False,
         check_embedding_ctx_length=False,
     )
