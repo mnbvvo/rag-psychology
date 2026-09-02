@@ -2,6 +2,7 @@
 心理学RAG系统主入口
 整合所有模块提供统一的接口
 """
+import asyncio
 import time
 import threading
 from modules.vector_store import PsychologyVectorStore
@@ -210,6 +211,57 @@ class PsychologyRAGSystem:
         prep["answer"] = gen["answer"]
         prep["sources"] = gen["sources"]
         # 回答侧安全复查：LLM 输出命中高危关键词时追加安全提醒（并落审计）
+        if check_safety:
+            answer, ans_check = self.safety_checker.review_answer(gen["answer"])
+            prep["answer"] = answer
+            if ans_check:
+                prep["answer_safety_check"] = ans_check
+        timings["total"] = (time.perf_counter() - t_query) * 1000
+        prep["timings"] = timings
+        _log_query_timings(prep["question"], timings, len(prep["sources"]))
+        return prep
+
+    async def aquery(
+        self,
+        question: str = None,
+        check_safety: Optional[bool] = None,
+        messages: Optional[List[Dict]] = None,
+        user_id: Optional[str] = None,
+        rag_enabled: Optional[bool] = None,
+    ) -> Dict:
+        """查询系统（异步完整流程，非流式 /api/query 使用）：与 query 语义一致。
+
+        并发模型与 query 的关键差异：
+        - prepare（安全检测 + 检索 + 重排，内部有同步 embedding/DB 调用）放线程池，
+          但只占用线程几十~几百毫秒；
+        - 生成阶段由 agenerate 走 llm_stream.astream 原生异步 —— 秒级 LLM 等待期间
+          不占任何线程，事件循环可同时托管大量 in-flight 请求。
+        结果：单进程并发上限从 run_in_threadpool 线程闸（≈40）解放出来，
+        由事件循环 + 对上游的并发闸共同决定。
+        """
+        t_query = time.perf_counter()
+        check_safety = settings.SAFETY_ENABLED if check_safety is None else bool(check_safety)
+        # prepare 内是同步 embedding/检索/重排调用，移出事件循环（仅占用线程很短时间）
+        prep = await asyncio.to_thread(
+            self.prepare, question, check_safety, messages, user_id, rag_enabled=rag_enabled
+        )
+        timings = prep.get("timings") or {}
+
+        # 高危：直接返回危机响应（prepare 内已记录全程 total）
+        if prep.get("is_crisis_response"):
+            return prep
+
+        # 生成（原生 async，LLM 等待期间不占线程）
+        # low_relevance：仅「RAG 开启且检索为空」才追加"未检索到资料"说明
+        gen = await self.rag.agenerate(
+            prep["question"], prep.get("context") or [],
+            timings=timings, messages=prep.get("norm_messages"),
+            user_id=user_id,
+            low_relevance=(bool(prep.get("rag_enabled")) and not prep.get("context")),
+        )
+        prep["answer"] = gen["answer"]
+        prep["sources"] = gen["sources"]
+        # 回答侧安全复查：LLM 输出命中高危关键词时追加安全提醒（纯 L0 关键词，CPU 级）
         if check_safety:
             answer, ans_check = self.safety_checker.review_answer(gen["answer"])
             prep["answer"] = answer

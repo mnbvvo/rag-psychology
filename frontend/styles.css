@@ -2016,3 +2016,59 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   border: 1px solid var(--border);
   border-radius: 999px;
 }
+
+/* ============================================================
+   并发准入 · 排队状态 & 停止按钮（总稿 §4.4 前端需求）
+   ============================================================ */
+.is-hidden {
+  display: none !important;
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 停止生成按钮：与发送按钮同尺寸、相邻排布 */
+.stop-btn {
+  width: 52px;
+  height: 52px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  transition: all 0.15s;
+}
+
+.stop-btn:hover {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.stop-btn:focus-visible {
+  outline: 2px solid var(--danger);
+  outline-offset: 2px;
+}
+
+/* 流式气泡内的排队状态行（放行前展示，started/token 后隐藏） */
+.queue-status {
+  display: block;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-ghost);
+  border-radius: 8px;
+  padding: 4px 10px;
+  margin-bottom: 6px;
+  width: fit-content;
+  max-width: 100%;
+}

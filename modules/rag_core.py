@@ -2,6 +2,7 @@
 RAG核心流程
 实现青少年心理领域的检索增强生成
 """
+import asyncio
 import time
 from typing import List, Dict, Optional
 from langchain_openai import ChatOpenAI
@@ -280,18 +281,63 @@ class PsychologyRAG:
         messages: Optional[List[Dict]] = None,
         user_id: Optional[str] = None,
         low_relevance: Optional[bool] = None,
+        prompt_messages: Optional[List] = None,
     ):
         """流式生成：与 generate 相同的提示词组装，逐 token 产出文本块（async generator）。
 
         供 /api/query/stream（SSE）使用：检索已由 prepare 完成，这里只做生成。
+        prompt_messages：可选。已组装好的消息列表（调用方若已在线程池完成
+        _build_messages——含同步记忆检索/embedding——可传入跳过重复构建，避免
+        这些同步调用直接跑在事件循环上阻塞所有并发请求）。
         """
-        prompt_messages = self._build_messages(
-            question, context, messages, user_id, low_relevance
-        )
+        if prompt_messages is None:
+            prompt_messages = self._build_messages(
+                question, context, messages, user_id, low_relevance
+            )
         async for chunk in self.llm_stream.astream(prompt_messages):
             content = chunk.content if hasattr(chunk, "content") else str(chunk)
             if content:
                 yield content
+
+    async def agenerate(
+        self,
+        question: str,
+        context: List[Document],
+        timings: Optional[Dict] = None,
+        messages: Optional[List[Dict]] = None,
+        user_id: Optional[str] = None,
+        low_relevance: Optional[bool] = None,
+    ) -> Dict:
+        """异步生成（非流式路径用）：与 generate 相同语义，但 LLM 调用走原生 async。
+
+        - 消息组装（_build_messages，含同步长期记忆检索/embedding）放线程池，
+          不占用事件循环 —— 避免单次缓存未命中的 embedding API 调用卡住所有并发请求；
+        - LLM 调用用 llm_stream.astream 逐块收集 —— 秒级生成期间事件循环空闲，
+          可同时托管大量 in-flight 请求，不再受 run_in_threadpool 线程闸（≈40）限制。
+        - 返回 {answer, sources}，与 generate 一致；llm 耗时写入 timings。
+        """
+        # 记忆检索等同步调用移出事件循环（线程池内完成）
+        prompt_messages = await asyncio.to_thread(
+            self._build_messages, question, context, messages, user_id, low_relevance
+        )
+        t0 = time.perf_counter()
+        full: List[str] = []
+        async for chunk in self.stream_generate(
+            question,
+            context,
+            messages=messages,
+            user_id=user_id,
+            low_relevance=low_relevance,
+            prompt_messages=prompt_messages,
+        ):
+            full.append(chunk)
+        if timings is not None:
+            timings["llm"] = (time.perf_counter() - t0) * 1000
+
+        return {
+            "answer": "".join(full),
+            "sources": build_sources(context),
+        }
 
 
     def run(

@@ -27,6 +27,7 @@ class LocalReranker:
         self._model = None
         self._lock = threading.Lock()
         self._load_failed = False  # 加载失败后置位，避免每次请求都重试拖慢链路
+        self._predict_lock = threading.Lock()  # 串行化并发 predict（torch 推理稳定性）
 
     def _load(self):
         """懒加载模型（线程安全，进程内只加载一次）。
@@ -78,11 +79,14 @@ class LocalReranker:
             return []
         model = self._load()
         pairs = [[query, doc.page_content] for doc in documents]
-        scores = model.predict(
-            pairs,
-            batch_size=settings.RERANK_BATCH_SIZE,
-            show_progress_bar=False,
-        )
+        # 并发请求同时跑 Cross-Encoder 推理会内存抖动/不稳定：加锁串行化。
+        # 重排本身是小批量 CPU/GPU 计算，串行吞吐损失远小于并发带来的不稳定。
+        with self._predict_lock:
+            scores = model.predict(
+                pairs,
+                batch_size=settings.RERANK_BATCH_SIZE,
+                show_progress_bar=False,
+            )
         ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
         min_score = settings.RERANK_MIN_SCORE
         if min_score > 0:

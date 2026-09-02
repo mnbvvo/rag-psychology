@@ -138,16 +138,33 @@ class Settings:
     INIT_ADMIN_PASSWORD = os.getenv("INIT_ADMIN_PASSWORD", "admin123456")
 
     # 登录失败限流（内存级；多进程部署需改用共享存储）
-    LOGIN_MAX_FAILS = 5  # 时间窗内最大失败次数
+    LOGIN_MAX_FAILS = 5  # 时间窗内最大失败次数（账号级锁定）
     LOGIN_LOCK_SECONDS = 900  # 失败锁定时间窗（秒）= 15 分钟
+    LOGIN_IP_MAX_REQUESTS = 200  # 单 IP 60 秒内最大登录请求数（防止单 IP 爆破；并发压测需注册多账号时可调高）
 
     # ============ 限流（仅 POST /api/query，内存级；多进程部署需改用共享存储） ============
     RATE_LIMIT_TIMES = 2000  # 时间窗内单客户端最大请求数
     RATE_LIMIT_SECONDS = 60  # 限流时间窗长度（秒）
 
+    # ============ AI 问答并发准入（AdmissionController，总稿 Phase 1 memory） ============
+    # 昂贵链路（安全检测/RAG/LLM/持久化）前的统一准入：有界活跃槽位 + 有界 FIFO 队列 +
+    # 单用户单 in-flight。同步与 SSE 共用同一组容量。说明见 docs/并发能力方案总稿.md §4。
+    AI_ADMISSION_BACKEND = os.getenv("AI_ADMISSION_BACKEND", "memory")  # memory（Phase 1）| redis（Phase 2，未实现）
+    AI_MAX_ACTIVE_REQUESTS = int(os.getenv("AI_MAX_ACTIVE_REQUESTS", "20"))  # 同时活跃上限
+    AI_MAX_QUEUED_REQUESTS = int(os.getenv("AI_MAX_QUEUED_REQUESTS", "40"))  # 等待队列上限（不含活跃）
+    AI_QUEUE_WAIT_TIMEOUT_SECONDS = float(os.getenv("AI_QUEUE_WAIT_TIMEOUT_SECONDS", "30"))  # 最大排队时长
+    AI_ACTIVE_LEASE_SECONDS = float(os.getenv("AI_ACTIVE_LEASE_SECONDS", "45"))  # Phase 2 活跃租约（memory 模式预留）
+    AI_ONE_INFLIGHT_PER_USER = os.getenv("AI_ONE_INFLIGHT_PER_USER", "true").lower() not in ("0", "false", "no")
+
+    # ============ 后台持久化 Worker（进程内队列；对应架构图 Queue→Worker 虚线路径） ============
+    # Phase 1 用 asyncio.Queue + 线程池 worker 落库（Redis 属 Phase 2，本期不引入）；
+    # Worker 每次用独立 DB Session，符合「Session 不跨任务共享」。
+    AI_BG_WORKERS = int(os.getenv("AI_BG_WORKERS", "1"))        # 后台落库 worker 数
+    AI_BG_QUEUE_SIZE = int(os.getenv("AI_BG_QUEUE_SIZE", "512"))  # 队列上限（队满时回退请求内同步落库）
+
     # ============ 服务配置（心理应用含危机内容，默认只绑本机，避免暴露到局域网） ============
     HOST = "127.0.0.1"  # 监听地址；切勿改为 0.0.0.0 以免暴露到局域网
-    PORT = 8000  # 监听端口
+    PORT = int(os.getenv("PORT", "8000"))  # 监听端口（env 可覆盖，便于多服务并存测试）
     DEBUG = False  # 调试模式（开启时 uvicorn --reload 且单进程）
 
     # 跨域白名单（前端若独立部署 / 用 Vite 等开发服务器时需在此放行；
@@ -163,6 +180,13 @@ class Settings:
     PG_USER = os.getenv("PG_USER", "postgres")
     PG_PASSWORD = os.getenv("PG_PASSWORD", "")
     PG_DB = os.getenv("PG_DB", "rag_psychology")
+    # 关系库连接池（总稿 §3.4/§6）：数值起步后按压测调；SQLite 忽略以下参数
+    DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "10"))          # async 主池常驻连接（请求路径）
+    DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "20"))    # async 主池高峰临时连接
+    DB_POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "30"))    # 无连接可借时的等待秒数
+    # sync Worker 小池（bg Worker 后台落库 / 记忆检索 / sync def 端点，在子线程跑 AsyncSession 不可用）
+    DB_WORKER_POOL_SIZE = int(os.getenv("DB_WORKER_POOL_SIZE", "2"))
+    DB_WORKER_MAX_OVERFLOW = int(os.getenv("DB_WORKER_MAX_OVERFLOW", "4"))
 
     _DB_PATH = _resolve_path("data/rag_psychology.sqlite3", _PROJECT_ROOT)
     if DB_BACKEND == "postgres":
@@ -192,6 +216,23 @@ class Settings:
                 "JWT_SECRET 未配置或强度不足（<32 字节）：拒绝启动以防止公开密钥伪造身份。"
                 "请在 .env 设置强随机密钥：python -c \"import secrets;print(secrets.token_urlsafe(48))\""
             )
+        # 准入后端守卫（fail-closed）：
+        # memory 后端（Phase 1）只允许单 worker——多 worker 各自计数会放大实际并发；
+        # redis 后端（Phase 2）尚未实现，禁止静默错配成每进程独立调度。
+        if cls.AI_ADMISSION_BACKEND == "memory":
+            wc = (os.getenv("WEB_CONCURRENCY") or "1").strip()
+            if wc not in ("", "1"):
+                raise ValueError(
+                    f"AI_ADMISSION_BACKEND=memory（Phase 1）只允许单 worker，"
+                    f"检测到 WEB_CONCURRENCY={wc}。多 worker 需 Phase 2 的 redis 后端。"
+                )
+        elif cls.AI_ADMISSION_BACKEND == "redis":
+            raise ValueError(
+                "AI_ADMISSION_BACKEND=redis 属于 Phase 2（多实例共享调度），尚未实现。"
+                "Phase 1 请使用 AI_ADMISSION_BACKEND=memory。"
+            )
+        else:
+            raise ValueError(f"未知 AI_ADMISSION_BACKEND: {cls.AI_ADMISSION_BACKEND}（可选 memory/redis）")
         return True
 
 

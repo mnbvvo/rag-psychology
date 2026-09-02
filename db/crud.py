@@ -70,11 +70,19 @@ def list_users(db, limit: int = 100) -> list[User]:
 
 
 def session_belongs_to(db, session_id: str, user_id: str) -> bool:
-    """判断会话是否属于当前用户（水平越权防护的核心校验）。"""
+    """判断会话是否属于当前用户（水平越权防护的核心校验）。
+
+    语义：已存在的会话必须属于当前用户（否则 False → API 层 403）；
+    **尚不存在的会话视为"待新建"，放行返回 True** —— 前端首轮可携带客户端
+    生成的 session_id，且持久化后台化后会话行由 Worker 稍后创建，此时
+    precheck 若按"不存在=无权"处理会把合法请求误判为 403（历史注释即要求放行）。
+    """
     if not session_id or not user_id:
         return False
     s = db.get(Session, session_id)
-    return s is not None and s.user_id == user_id
+    if s is None:
+        return True  # 未创建的新会话：放行，由持久化阶段创建并归属当前用户
+    return s.user_id == user_id
 
 
 # 未命名会话的占位标题集合：命中即视为"还没取名"，首次提问时自动命名。

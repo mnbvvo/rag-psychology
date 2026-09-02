@@ -20,14 +20,27 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 from typing import List, Optional, Dict
 import json
+import asyncio
 from modules import rag_system
 from modules.rag_core import build_sources
+from modules.bg_queue import bg_queue
+from modules.concurrency.service import admission
+from modules.concurrency.models import (
+    AI_QUEUE_FULL,
+    AI_QUEUE_TIMEOUT,
+    AI_REQUEST_ALREADY_FINISHED,
+    AI_REQUEST_CANCELLED,
+    AI_REQUEST_IN_PROGRESS,
+    CancelCode,
+    SubmitCode,
+    TerminalReason,
+    WaitCode,
+)
 from config.settings import settings
-from db import init_db, crud
-from db.models import Session as ConvSession
+from db import init_db, crud, crud_async
 from api.auth import router as auth_router
-from api.deps import get_current_user, require_admin
-from sqlalchemy import select, desc
+from api.deps import get_current_user, get_db_session, require_admin
+from sqlalchemy.ext.asyncio import AsyncSession
 import uuid
 
 app = FastAPI(
@@ -61,13 +74,138 @@ def _assert_no_impersonation(body_user_id, real_user_id: str) -> None:
         raise HTTPException(status_code=403, detail="无权以其他用户身份操作")
 
 
-def _assert_session_ownership(session_id, user_id: str) -> None:
-    """水平越权：session_id 已存在但不属于当前用户 → 403（未创建的新 id 放行）。"""
+async def _assert_session_ownership(session_id, user_id: str, db: AsyncSession) -> None:
+    """水平越权：session_id 已存在但不属于当前用户 → 403（未创建的新 id 放行）。
+
+    使用请求级 AsyncSession（异步数据层，见 db/crud_async.py）。
+    """
     if not session_id:
         return
-    with crud.get_db() as db:
-        if not crud.session_belongs_to(db, session_id, user_id):
-            raise HTTPException(status_code=403, detail="无权访问该会话")
+    if not await crud_async.session_belongs_to(db, session_id, user_id):
+        raise HTTPException(status_code=403, detail="无权访问该会话")
+
+
+def _persist_payload_sync(
+    session_id: str,
+    question: str,
+    answer: str,
+    title: Optional[str],
+    user_id: str,
+    safety_check: Optional[dict] = None,
+    is_crisis_response: bool = False,
+    safety_note: Optional[str] = None,
+    answer_safety_check: Optional[dict] = None,
+) -> None:
+    """一轮问答的落库 + 长期记忆（同步实现，由后台 Worker 线程池调用）。
+
+    对应架构图「持久化/记忆写入 → Queue → Worker → DB」虚线路径的任务体：
+    - 含同步 DB 写（get_db/crud）与同步 embedding（长期记忆 save_turn 两次 embed）；
+    - 由 modules/bg_queue 的 Worker 经 asyncio.to_thread 执行，每个任务独立 DB Session；
+    - 失败不影响回答本身，只打告警。
+    """
+    current_question = (question or "").strip()
+    try:
+        with crud.get_db() as db:
+            crud.append_turn(
+                db,
+                session_id,
+                current_question,
+                answer or "",
+                # 自动命名提示：优先用前端首次提问传入的标题，否则回退到当前问题
+                title=(title or current_question or None),
+                user_id=user_id,
+            )
+            sc = safety_check
+            if sc and sc.get("is_crisis"):
+                crud.log_crisis(
+                    db,
+                    session_id,
+                    level=sc.get("level", "unknown"),
+                    keywords_found=sc.get("keywords_found"),
+                    question=current_question,
+                    response=answer if is_crisis_response else safety_note,
+                    is_crisis_response=bool(is_crisis_response),
+                    detect_method=sc.get("detect_method") if isinstance(sc, dict) else None,
+                    confidence=sc.get("confidence") if isinstance(sc, dict) else None,
+                    user_id=user_id,
+                )
+            # 回答侧命中高危：另记一条审计（detect_method=answer_check）
+            ans_sc = answer_safety_check
+            if ans_sc and ans_sc.get("is_crisis"):
+                crud.log_crisis(
+                    db,
+                    session_id,
+                    level=ans_sc.get("level", "high"),
+                    keywords_found=ans_sc.get("keywords_found"),
+                    question=current_question,
+                    response=answer or "",
+                    is_crisis_response=False,
+                    detect_method="answer_check",
+                    user_id=user_id,
+                )
+    except Exception as e:
+        print(f"[persist][WARN] 会话持久化失败（回答已正常返回）: {e}", flush=True)
+
+    # 长期记忆落库（向量检索式）：本轮问答 + embedding 写入 user_chat_history
+    if settings.MEMORY_ENABLED and current_question:
+        try:
+            from modules.memory import memory_service
+
+            memory_service.save_turn(user_id, current_question, answer or "")
+        except Exception as e:
+            print(f"[memory][WARN] 长期记忆落库失败: {e}", flush=True)
+
+
+async def _enqueue_persist(
+    session_id: str,
+    question: str,
+    answer: str,
+    title: Optional[str],
+    user_id: str,
+    safety_check: Optional[dict] = None,
+    is_crisis_response: bool = False,
+    safety_note: Optional[str] = None,
+    answer_safety_check: Optional[dict] = None,
+) -> None:
+    """投递持久化任务到后台队列；队列未启动/已满时回退请求内同步执行（可靠性兜底）。"""
+    from modules.bg_queue import bg_queue
+
+    payload = (
+        session_id, question, answer, title, user_id,
+        safety_check, is_crisis_response, safety_note, answer_safety_check,
+    )
+    ok = await bg_queue.enqueue(_persist_payload_sync, *payload)
+    if not ok:
+        # 回退：请求内线程池执行（与旧行为一致）
+        await run_in_threadpool(_persist_payload_sync, *payload)
+
+
+# ---------------- AI 问答并发准入（总稿 §4，Phase 1 memory） ----------------
+# 429 Retry-After：建议与排队超时同量级（上限 60s）
+_ADMISSION_RETRY_AFTER = str(max(1, min(60, int(settings.AI_QUEUE_WAIT_TIMEOUT_SECONDS))))
+
+
+def _admission_json(status: int, detail: str, code: str, headers: dict = None) -> JSONResponse:
+    """准入类错误的统一响应体：{detail, code} + 可选头（如 Retry-After）。
+
+    用 JSONResponse 而非 HTTPException，是为了让前端能按 code 精确分支，
+    同时保持 detail 中文提示向后兼容。
+    """
+    return JSONResponse(
+        status_code=status,
+        content={"detail": detail, "code": code},
+        headers=headers or {},
+    )
+
+
+def _sse_queue_event(request_id: str, position: int, queued: int, active: int) -> str:
+    return _sse("queue", {
+        "request_id": request_id,
+        "position": position,
+        "queued": queued,
+        "active": active,
+        "wait_timeout_seconds": settings.AI_QUEUE_WAIT_TIMEOUT_SECONDS,
+    })
 
 
 @app.middleware("http")
@@ -159,6 +297,14 @@ class QueryResponse(BaseModel):
         None,
         description="本次对话归属的会话 id（与请求中的 session_id 对应；未传时由服务端生成）。",
     )
+    request_id: Optional[str] = Field(
+        None,
+        description="本次请求的准入凭证 id（同步接口新增，便于取消/对账）。",
+    )
+    queue: Optional[dict] = Field(
+        None,
+        description="准入信息：{wait_ms, queued}。queued=true 表示曾排队等待放行。",
+    )
 
 
 class SessionCreate(BaseModel):
@@ -172,104 +318,102 @@ class SessionRename(BaseModel):
 
 
 @app.post("/api/query", response_model=QueryResponse)
-async def query(request: QueryRequest, current_user=Depends(get_current_user)):
+async def query(
+    request: QueryRequest,
+    db: AsyncSession = Depends(get_db_session),
+    current_user=Depends(get_current_user),
+):
     """
-    查询接口
-    接收用户问题，返回RAG生成的回答，并把本轮对话与（若命中）危机事件
-    持久化到关系库（与 Chroma 向量检索互补）。需要登录（Bearer JWT）。
+    查询接口（同步语义，内部为 async 流收集完整答案）
+
+    昂贵链路（安全检测/RAG/LLM/持久化）前先过统一准入（总稿 §4）：
+    空闲槽位立即执行；无槽位 FIFO 排队等待；重复提交/队满/超时返回确定错误码。
     """
     # —— 越权预校验：在调用 LLM 之前快速失败，杜绝资源泄露与算力浪费 ——
     _assert_no_impersonation(request.user_id, current_user.id)
-    _assert_session_ownership(request.session_id, current_user.id)
+    await _assert_session_ownership(request.session_id, current_user.id, db)
+    user_id = current_user.id
+    request_id = uuid.uuid4().hex
 
+    # —— 准入：submit（去重 + 槽位检查 + 入队原子完成） ——
+    sub = await admission.submit(user_id, request_id)
+    if sub.code == SubmitCode.REJECTED_DUPLICATE:
+        return _admission_json(409, "你已有问题正在处理", AI_REQUEST_IN_PROGRESS)
+    if sub.code == SubmitCode.REJECTED_FULL:
+        return _admission_json(
+            429, "当前排队已满，请稍后重试", AI_QUEUE_FULL,
+            headers={"Retry-After": _ADMISSION_RETRY_AFTER},
+        )
+    ticket = sub.ticket
+    wait_ms = 0.0
+    if sub.code == SubmitCode.QUEUED:
+        # 排队等待放行（同步接口无 SSE，仅静默等待）
+        wait_res = await admission.wait_until_running(request_id)
+        wait_ms = wait_res.wait_ms
+        if wait_res.code == WaitCode.QUEUE_TIMEOUT:
+            admission.record_dropped(ticket, wait_ms, TerminalReason.QUEUE_TIMEOUT.value)
+            return _admission_json(503, "排队等待超时，请重新发起", AI_QUEUE_TIMEOUT)
+        if wait_res.code == WaitCode.CANCELLED:
+            admission.record_dropped(ticket, wait_ms, TerminalReason.CANCELLED.value)
+            return _admission_json(409, "请求已取消", AI_REQUEST_CANCELLED)
+    admission.note_started(ticket, wait_ms)
+
+    terminal = TerminalReason.COMPLETED.value
     try:
-        result = await run_in_threadpool(
-            rag_system.query,
+        # 异步完整流程：prepare（同步检索/embedding）在线程池，生成走 llm_stream
+        # 原生 async —— LLM 秒级等待不占线程，摆脱 run_in_threadpool 线程闸限制
+        result = await rag_system.aquery(
             question=request.question,
             messages=request.messages,
             check_safety=request.safety_enabled,
-            user_id=current_user.id,
+            user_id=user_id,
             rag_enabled=request.rag_enabled,
         )
 
         # —— 持久化到关系库（会话 + 危机审计，归属当前用户） ——
-        # 与 Chroma 向量库分工：Chroma 管检索，这里管结构化留痕。
-        # 仅对话联调页（persist=true）需要落库；提示词对比页传 persist=false，
-        # 其临时问答不写入会话表，避免泄漏到历史对话列表。
-        # 持久化失败不影响已经生成的回答，只打告警日志。
-        current_question = result.get("question", "")
-        answer = result.get("answer", "")
+        # 仅对话联调页（persist=true）需要落库。落库已后台化（Queue→Worker→DB，
+        # 见 _enqueue_persist / modules/bg_queue）：请求只负责生成并拿到 session_id，
+        # 不再阻塞等待同步 DB 写与 embedding；队列不可用/已满时回退请求内同步执行。
+        # 运行中被取消的请求不写会话（总稿 FR-BE-06）。
         session_id = None
-        if request.persist:
+        if request.persist and not admission.is_cancelling(request_id):
             session_id = request.session_id or uuid.uuid4().hex
-            try:
-                with crud.get_db() as db:
-                    crud.append_turn(
-                        db,
-                        session_id,
-                        current_question,
-                        answer,
-                        # 自动命名提示：优先用前端首次提问传入的标题，否则回退到当前问题；
-                        # 服务端只会在会话标题仍为占位名时采纳（见 crud._auto_title）
-                        title=(request.title or current_question or None),
-                        user_id=current_user.id,
-                    )
-                    sc = result.get("safety_check")
-                    if sc and sc.get("is_crisis"):
-                        crud.log_crisis(
-                            db,
-                            session_id,
-                            level=sc.get("level", "unknown"),
-                            keywords_found=sc.get("keywords_found"),
-                            question=current_question,
-                            response=answer if result.get("is_crisis_response") else result.get("safety_note"),
-                            is_crisis_response=bool(result.get("is_crisis_response")),
-                            detect_method=sc.get("detect_method") if isinstance(sc, dict) else None,
-                            confidence=sc.get("confidence") if isinstance(sc, dict) else None,
-                            user_id=current_user.id,
-                        )
-                    # 回答侧命中高危：另记一条审计（detect_method=answer_check）
-                    ans_sc = result.get("answer_safety_check")
-                    if ans_sc and ans_sc.get("is_crisis"):
-                        crud.log_crisis(
-                            db,
-                            session_id,
-                            level=ans_sc.get("level", "high"),
-                            keywords_found=ans_sc.get("keywords_found"),
-                            question=current_question,
-                            response=answer,
-                            is_crisis_response=False,
-                            detect_method="answer_check",
-                            user_id=current_user.id,
-                        )
-            except Exception as e:
-                print(f"[persist][WARN] 会话持久化失败（回答已正常返回）: {e}", flush=True)
-
-            # 长期记忆落库（向量检索式）：本轮问答 + embedding 写入 user_chat_history，
-            # 供后续提问检索相似历史。独立于会话持久化，失败不影响回答。
-            if settings.MEMORY_ENABLED:
-                try:
-                    from modules.memory import memory_service
-
-                    memory_service.save_turn(current_user.id, current_question, answer)
-                except Exception as e:
-                    print(f"[memory][WARN] 长期记忆落库失败: {e}", flush=True)
+            await _enqueue_persist(
+                session_id,
+                result.get("question", ""),
+                result.get("answer", ""),
+                request.title,
+                user_id,
+                safety_check=result.get("safety_check"),
+                is_crisis_response=bool(result.get("is_crisis_response", False)),
+                safety_note=result.get("safety_note"),
+                answer_safety_check=result.get("answer_safety_check"),
+            )
+        if admission.is_cancelling(request_id):
+            terminal = TerminalReason.CANCELLED.value
 
         return QueryResponse(
-            answer=answer,
+            answer=result.get("answer", ""),
             sources=result.get("sources") or [],
             safety_note=result.get("safety_note"),
             is_crisis_response=bool(result.get("is_crisis_response", False)),
             safety_check=result.get("safety_check"),
             timings=result.get("timings"),
             session_id=session_id,
+            request_id=request_id,
+            queue={"wait_ms": round(wait_ms, 1), "queued": sub.code == SubmitCode.QUEUED},
         )
     except ValueError as e:
         # 参数校验类错误返回 400，便于前端定位
+        terminal = TerminalReason.FAILED.value
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         # 不把内部异常细节（路径/堆栈）回传给客户端
+        terminal = TerminalReason.FAILED.value
         raise HTTPException(status_code=500, detail="内部处理失败，请稍后重试。")
+    finally:
+        # 无论成功/失败/取消，真实退出后释放槽位（幂等；防超卖）
+        await admission.release(ticket, terminal=terminal)
 
 
 def _sse(event: str, data: dict) -> str:
@@ -278,147 +422,224 @@ def _sse(event: str, data: dict) -> str:
 
 
 @app.post("/api/query/stream")
-async def query_stream(stream_request: Request, request: QueryRequest, current_user=Depends(get_current_user)):
+async def query_stream(
+    stream_request: Request,
+    request: QueryRequest,
+    db: AsyncSession = Depends(get_db_session),
+    current_user=Depends(get_current_user),
+):
     """
     SSE 流式问答（对话联调页使用）。需要登录（Bearer JWT）。
 
-    事件流：sources（来源 + 检索耗时）→ token×N（逐块文本）→ done（完整回答 +
-    safety_note + timings + session_id，已落库）；高危危机直接发 done；异常发 error。
+    事件流（总稿 §4.3.4）：queue（0..N 次，仅排队时）→ started（1 次）→
+    sources（1 次）→ token×N（逐块文本）→ done（完整回答 + timings +
+    session_id + request_id，已落库）；高危危机直接发 done；异常发 error。
+    旧前端忽略未知事件后仍可消费原有 sources/token/done/error（向后兼容）。
     """
     # 越权预校验（与 /api/query 一致，在调用 LLM 之前快速失败）
     _assert_no_impersonation(request.user_id, current_user.id)
-    _assert_session_ownership(request.session_id, current_user.id)
+    await _assert_session_ownership(request.session_id, current_user.id, db)
+    user_id = current_user.id
+    request_id = uuid.uuid4().hex
+
+    # —— 准入：submit（去重 + 槽位检查 + 入队原子完成）；409/429 在建立流前返回 ——
+    sub = await admission.submit(user_id, request_id)
+    if sub.code == SubmitCode.REJECTED_DUPLICATE:
+        return _admission_json(409, "你已有问题正在处理", AI_REQUEST_IN_PROGRESS)
+    if sub.code == SubmitCode.REJECTED_FULL:
+        return _admission_json(
+            429, "当前排队已满，请稍后重试", AI_QUEUE_FULL,
+            headers={"Retry-After": _ADMISSION_RETRY_AFTER},
+        )
+    ticket = sub.ticket
 
     async def event_stream():
+        # 全流程墙钟计时（用于 done 事件里的 total，与 /api/query 语义一致）
+        t_total = time.perf_counter()
+        terminal = TerminalReason.COMPLETED.value
+        wait_ms = 0.0
         try:
-            # 全流程墙钟计时（用于 done 事件里的 total，与 /api/query 语义一致）
-            t_total = time.perf_counter()
-            # 1) 安全检测 + 混合检索 + 重排（同步阻塞放线程池，避免卡事件循环）
+            # ============ 1) 排队阶段：发 queue 事件直到放行/超时/取消/断连 ============
+            if sub.code == SubmitCode.QUEUED:
+                upd0 = admission.queue_update(request_id)
+                yield _sse_queue_event(request_id, upd0.position, upd0.queued, upd0.active)
+                outcome_fut = asyncio.ensure_future(
+                    admission.wait_until_running(request_id)
+                )
+                queued_disconnected = False
+                while not outcome_fut.done():
+                    try:
+                        await asyncio.wait_for(asyncio.shield(outcome_fut), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        # 客户端在排队中断开 → 尽力取消排队
+                        if await stream_request.is_disconnected():
+                            queued_disconnected = True
+                            break
+                        upd = admission.queue_update(request_id)
+                        if upd.position >= 0:
+                            yield _sse_queue_event(request_id, upd.position, upd.queued, upd.active)
+                        continue
+                if queued_disconnected:
+                    await admission.cancel(user_id, request_id)
+                    outcome = await asyncio.shield(outcome_fut)
+                    if outcome.code == WaitCode.STARTED:
+                        # 取消前已被提升：本协程持有槽位，释放防止泄漏
+                        admission.note_started(ticket, outcome.wait_ms)
+                        await admission.release(
+                            ticket, terminal=TerminalReason.DISCONNECTED.value
+                        )
+                    else:
+                        reason = (
+                            TerminalReason.QUEUE_TIMEOUT.value
+                            if outcome.code == WaitCode.QUEUE_TIMEOUT
+                            else TerminalReason.CANCELLED.value
+                        )
+                        admission.record_dropped(ticket, outcome.wait_ms, reason)
+                    return
+                outcome = await asyncio.shield(outcome_fut)
+                wait_ms = outcome.wait_ms
+                if outcome.code == WaitCode.QUEUE_TIMEOUT:
+                    admission.record_dropped(ticket, wait_ms, TerminalReason.QUEUE_TIMEOUT.value)
+                    yield _sse("error", {
+                        "detail": "排队等待超时，请重新发起",
+                        "code": AI_QUEUE_TIMEOUT,
+                        "error_type": "queue_timeout",
+                    })
+                    return
+                if outcome.code == WaitCode.CANCELLED:
+                    admission.record_dropped(ticket, wait_ms, TerminalReason.CANCELLED.value)
+                    yield _sse("error", {
+                        "detail": "请求已取消",
+                        "code": AI_REQUEST_CANCELLED,
+                        "error_type": "cancelled",
+                    })
+                    return
+                admission.note_started(ticket, wait_ms)
+                snap = await admission.snapshot()
+                yield _sse("started", {
+                    "request_id": request_id,
+                    "queue_wait_ms": round(wait_ms, 1),
+                    "active": snap.active,
+                })
+            else:
+                # 立即获得槽位：无需 queue 事件，直接 started
+                admission.note_started(ticket, 0.0)
+                snap = await admission.snapshot()
+                yield _sse("started", {
+                    "request_id": request_id,
+                    "queue_wait_ms": 0,
+                    "active": snap.active,
+                })
+
+            # ============ 2) 放行后：安全检测 + 混合检索 + 重排（同步放线程池） ============
             prep = await run_in_threadpool(
                 rag_system.prepare,
                 question=request.question,
                 messages=request.messages,
                 check_safety=request.safety_enabled,
-                user_id=current_user.id,
+                user_id=user_id,
                 rag_enabled=request.rag_enabled,
             )
             if prep.get("is_crisis_response"):
-                # 高危拦截同样写会话与危机审计（此前缺失：前端对话页走的就是 stream，
-                # 高危问答既不进历史也不留审计；现与 /api/query 高危路径对齐）
-                if request.persist:
+                # 高危拦截同样写会话与危机审计（与 /api/query 高危路径对齐；落库后台化）
+                session_id = None
+                if request.persist and not admission.is_cancelling(request_id):
                     session_id = request.session_id or uuid.uuid4().hex
-                    try:
-                        with crud.get_db() as db:
-                            crud.append_turn(
-                                db, session_id, prep.get("question", ""), prep.get("answer", ""),
-                                title=(request.title or prep.get("question") or None),
-                                user_id=current_user.id,
-                            )
-                            sc = prep.get("safety_check") or {}
-                            crud.log_crisis(
-                                db, session_id,
-                                level=sc.get("level", "unknown"),
-                                keywords_found=sc.get("keywords_found"),
-                                question=prep.get("question", ""),
-                                response=prep.get("answer", ""),
-                                is_crisis_response=True,
-                                detect_method=sc.get("detect_method") if isinstance(sc, dict) else None,
-                                confidence=sc.get("confidence") if isinstance(sc, dict) else None,
-                                user_id=current_user.id,
-                            )
-                    except Exception as e:
-                        print(f"[persist][WARN] 高危危机审计写入失败: {e}", flush=True)
+                    await _enqueue_persist(
+                        session_id,
+                        prep.get("question", ""),
+                        prep.get("answer", ""),
+                        request.title,
+                        user_id,
+                        safety_check=prep.get("safety_check"),
+                        is_crisis_response=True,
+                        safety_note=prep.get("answer", ""),
+                    )
                 yield _sse("done", {
                     "answer": prep.get("answer", ""),
                     "is_crisis_response": True,
                     "safety_check": prep.get("safety_check"),
+                    "session_id": session_id,
+                    "request_id": request_id,
                 })
                 return
 
-            # 2) 先发来源与检索耗时（生成尚未开始，前端可先展示引用）
+            # 3) 来源与检索耗时（生成尚未开始，前端可先展示引用）
             yield _sse("sources", {
                 "sources": prep.get("sources") or [],
                 "timings": prep.get("timings") or {},
             })
 
-            # 3) 流式生成：逐 token 下发
+            # 4) 流式生成：逐 token 下发；断连 / 被取消时及时终止
+            # prompt_messages 预构建（含同步长期记忆检索/embedding）放线程池，
+            # 避免首次生成前在事件循环上跑同步 embed，阻塞所有并发流
+            prompt_messages = await asyncio.to_thread(
+                rag_system.rag._build_messages,
+                prep["question"],
+                prep.get("context") or [],
+                prep.get("norm_messages"),
+                user_id,
+                (bool(prep.get("rag_enabled")) and not prep.get("context")),
+            )
             timings = prep.get("timings") or {}
             full: list[str] = []
             t_gen = time.perf_counter()
+            stopped = False
             async for chunk in rag_system.rag.stream_generate(
                 prep["question"],
                 prep.get("context") or [],
-                # 必须传归一化后的消息（role=human/ai），否则前端 user/assistant
-                # 角色在 _build_messages 里不匹配被静默丢弃，多轮历史全部丢失
                 messages=prep.get("norm_messages"),
-                user_id=current_user.id,
-                # 仅 RAG 开启且检索为空才追加"未检索到资料"说明（纯对话模式不追加）
+                user_id=user_id,
                 low_relevance=(bool(prep.get("rag_enabled")) and not prep.get("context")),
+                prompt_messages=prompt_messages,
             ):
                 full.append(chunk)
                 yield _sse("token", {"text": chunk})
-                # 客户端断开（关页面/刷新）时及时终止生成，避免浪费上游 token 与算力
+                # 客户端断开（关页面/刷新）或用户取消 → 终止生成，避免浪费上游 token
                 if await stream_request.is_disconnected():
                     print("[query/stream] 客户端断开，终止生成", flush=True)
+                    terminal = TerminalReason.DISCONNECTED.value
+                    stopped = True
+                    break
+                if admission.is_cancelling(request_id):
+                    print("[query/stream] 用户取消，终止生成", flush=True)
+                    terminal = TerminalReason.CANCELLED.value
+                    stopped = True
                     break
             answer = "".join(full)
-            # 回答侧安全复查：命中高危关键词时追加安全提醒（token 已发，追加部分随 done 的 answer 下发）
-            # 受 safety_enabled 开关控制：关闭时跳过复查（与 /api/query 行为一致）
+            # 回答侧安全复查：命中高危关键词时追加安全提醒（纯 L0，CPU 级）
             ans_check = None
             if request.safety_enabled is not False and settings.SAFETY_ENABLED:
                 answer, ans_check = rag_system.safety_checker.review_answer(answer)
-            # 生成耗时（从流式调用开始到结束）与全流程总耗时，供前端耗时栏展示
             timings["llm"] = (time.perf_counter() - t_gen) * 1000
             timings["total"] = (time.perf_counter() - t_total) * 1000
 
-            # 4) 持久化（与 /api/query 相同的落库语义；失败不影响已生成的回答）
+            if stopped:
+                # 断连直接结束；取消发 error 让前端复位按钮与 loading
+                if terminal == TerminalReason.CANCELLED.value:
+                    yield _sse("error", {
+                        "detail": "回答已停止",
+                        "code": AI_REQUEST_CANCELLED,
+                        "error_type": "cancelled",
+                    })
+                return
+
+            # 5) 持久化后台化（Queue→Worker→DB，见 modules/bg_queue）；
+            #    失败不影响已生成的回答；session_id 在请求内生成并随 done 下发
             session_id = None
             if request.persist:
                 session_id = request.session_id or uuid.uuid4().hex
-                try:
-                    with crud.get_db() as db:
-                        crud.append_turn(
-                            db, session_id, prep.get("question", ""), answer,
-                            title=(request.title or prep.get("question") or None),
-                            user_id=current_user.id,
-                        )
-                        sc = prep.get("safety_check")
-                        if sc and sc.get("is_crisis"):
-                            crud.log_crisis(
-                                db, session_id,
-                                level=sc.get("level", "unknown"),
-                                keywords_found=sc.get("keywords_found"),
-                                question=prep.get("question", ""),
-                                response=prep.get("safety_note"),
-                                is_crisis_response=False,
-                                detect_method=sc.get("detect_method") if isinstance(sc, dict) else None,
-                                confidence=sc.get("confidence") if isinstance(sc, dict) else None,
-                                user_id=current_user.id,
-                            )
-                        # 回答侧命中高危：另记一条审计（detect_method=answer_check）
-                        if ans_check and ans_check.get("is_crisis"):
-                            crud.log_crisis(
-                                db, session_id,
-                                level=ans_check.get("level", "high"),
-                                keywords_found=ans_check.get("keywords_found"),
-                                question=prep.get("question", ""),
-                                response=answer,
-                                is_crisis_response=False,
-                                detect_method="answer_check",
-                                user_id=current_user.id,
-                            )
-                except Exception as e:
-                    print(f"[persist][WARN] 会话持久化失败（回答已正常返回）: {e}", flush=True)
-
-                # 长期记忆落库（向量检索式）：本轮问答 + embedding 写入 user_chat_history，
-                # 供后续提问检索相似历史。独立于会话持久化，失败不影响回答。
-                if settings.MEMORY_ENABLED:
-                    try:
-                        from modules.memory import memory_service
-
-                        memory_service.save_turn(current_user.id, prep.get("question", ""), answer)
-                    except Exception as e:
-                        print(f"[memory][WARN] 长期记忆落库失败: {e}", flush=True)
+                await _enqueue_persist(
+                    session_id,
+                    prep.get("question", ""),
+                    answer,
+                    request.title,
+                    user_id,
+                    safety_check=prep.get("safety_check"),
+                    is_crisis_response=False,
+                    safety_note=prep.get("safety_note"),
+                    answer_safety_check=ans_check,
+                )
 
             yield _sse("done", {
                 "answer": answer,
@@ -426,15 +647,19 @@ async def query_stream(stream_request: Request, request: QueryRequest, current_u
                 "safety_check": prep.get("safety_check"),
                 "timings": timings,
                 "session_id": session_id,
+                "request_id": request_id,
             })
         except Exception as e:
-            # 记录完整异常到服务端日志；SSE error 事件只带异常类型（不暴露堆栈/路径），
-            # 便于前端展示具体原因、下次复现时直接定位
+            # 记录完整异常到服务端日志；SSE error 事件只带异常类型（不暴露堆栈/路径）
+            terminal = TerminalReason.FAILED.value
             print(f"[query/stream][ERROR] {type(e).__name__}: {e}", flush=True)
             yield _sse("error", {
                 "detail": f"生成失败（{type(e).__name__}），请稍后重试。",
                 "error_type": type(e).__name__,
             })
+        finally:
+            # 工作真实退出后才释放活跃槽位（幂等；断连/取消/异常均覆盖）
+            await admission.release(ticket, terminal=terminal)
 
     return StreamingResponse(
         event_stream(),
@@ -445,6 +670,41 @@ async def query_stream(stream_request: Request, request: QueryRequest, current_u
             "X-Accel-Buffering": "no",  # 防止反代缓冲（本地直连无影响）
         },
     )
+
+
+# ---------------- 准入：取消与状态（总稿 FR-BE-06 / FR-BE-10） ----------------
+@app.delete("/api/query/requests/{request_id}")
+async def cancel_request(request_id: str, current_user=Depends(get_current_user)):
+    """
+    取消自己的问答请求（Phase 1 memory）。
+    QUEUED → 原子移除并释放用户占位；RUNNING → 标记取消，等待工作协程真实退出。
+    操作他人请求 → 403；已终态/不存在 → 409。
+    """
+    owner = admission.resolve_user_of(request_id)
+    if owner is None:
+        return _admission_json(409, "请求不存在或已结束", AI_REQUEST_ALREADY_FINISHED)
+    if owner != current_user.id:
+        raise HTTPException(status_code=403, detail="无权操作该请求")
+    res = await admission.cancel(current_user.id, request_id)
+    if res.code == CancelCode.CANCELLED:
+        return {"ok": True, "status": "cancelled", "request_id": request_id}
+    if res.code == CancelCode.CANCELLING:
+        return {"ok": True, "status": "cancelling", "request_id": request_id}
+    return _admission_json(409, "请求已结束", AI_REQUEST_ALREADY_FINISHED)
+
+
+@app.get("/api/concurrency/status")
+async def concurrency_status():
+    """准入状态聚合（只返回聚合信息，不涉及个人数据，无需登录）。"""
+    snap = await admission.snapshot()
+    return {
+        "backend": snap.backend,
+        "max_active": snap.max_active,
+        "active": snap.active,
+        "max_queue": snap.max_queue,
+        "queued": snap.queued,
+        "accepting": snap.accepting,
+    }
 
 
 @app.get("/api/health")
@@ -459,127 +719,142 @@ async def health_check():
 
 
 @app.get("/api/sessions")
-async def list_sessions(limit: int = 50, current_user=Depends(get_current_user)):
-    """列出当前用户的最近会话（含消息数）；他人会话不可见（数据隔离）。"""
-    with crud.get_db() as db:
-        rows = (
-            db.execute(
-                select(ConvSession)
-                .where(ConvSession.user_id == current_user.id)
-                .order_by(desc(ConvSession.updated_at))
-                .limit(limit)
-            )
-            .scalars()
-            .all()
-        )
-        return [
-            {
-                "id": s.id,
-                "title": s.title,
-                "created_at": s.created_at.isoformat() if s.created_at else None,
-                "updated_at": s.updated_at.isoformat() if s.updated_at else None,
-                "message_count": len(s.messages),
-            }
-            for s in rows
-        ]
+async def list_sessions(
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db_session),
+    current_user=Depends(get_current_user),
+):
+    """列出当前用户的最近会话（含消息数）；他人会话不可见（数据隔离）。
+
+    请求级 AsyncSession + selectinload(messages)（异步数据层，防 MissingGreenlet）。
+    """
+    rows = await crud_async.list_sessions(db, current_user.id, limit)
+    return [
+        {
+            "id": s.id,
+            "title": s.title,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+            "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+            "message_count": len(s.messages),
+        }
+        for s in rows
+    ]
 
 
 @app.get("/api/sessions/{session_id}/messages")
-async def get_session_messages(session_id: str, current_user=Depends(get_current_user)):
+async def get_session_messages(
+    session_id: str,
+    db: AsyncSession = Depends(get_db_session),
+    current_user=Depends(get_current_user),
+):
     """获取某会话的全部消息（按时间顺序）；非本人会话 → 403。"""
-    with crud.get_db() as db:
-        sess = db.get(ConvSession, session_id)
-        if sess is None:
-            raise HTTPException(status_code=403, detail="无权访问该会话")
-        if sess.user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="无权访问该会话")
-        return [
-            {
-                "role": m.role,
-                "content": m.content,
-                "created_at": m.created_at.isoformat() if m.created_at else None,
-            }
-            for m in sess.messages
-        ]
+    sess = await crud_async.get_session_with_messages(db, session_id)
+    if sess is None:
+        raise HTTPException(status_code=403, detail="无权访问该会话")
+    if sess.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="无权访问该会话")
+    return [
+        {
+            "role": m.role,
+            "content": m.content,
+            "created_at": m.created_at.isoformat() if m.created_at else None,
+        }
+        for m in sess.messages
+    ]
 
 
 @app.post("/api/sessions")
-async def create_session(payload: SessionCreate, current_user=Depends(get_current_user)):
+async def create_session(
+    payload: SessionCreate,
+    db: AsyncSession = Depends(get_db_session),
+    current_user=Depends(get_current_user),
+):
     """新建一个空会话（归属当前用户），返回服务端生成的 id。"""
-    with crud.get_db() as db:
-        sess = ConvSession(id=uuid.uuid4().hex, title=(payload.name or "新的对话")[:255], user_id=current_user.id)
-        db.add(sess)
-        db.flush()
-        return {
-            "id": sess.id,
-            "name": sess.title,
-            "created_at": sess.created_at.isoformat() if sess.created_at else None,
-            "updated_at": sess.updated_at.isoformat() if sess.updated_at else None,
-            "message_count": 0,
-        }
+    sess = await crud_async.create_session(
+        db, uuid.uuid4().hex, payload.name or "新的对话", current_user.id
+    )
+    return {
+        "id": sess.id,
+        "name": sess.title,
+        "created_at": sess.created_at.isoformat() if sess.created_at else None,
+        "updated_at": sess.updated_at.isoformat() if sess.updated_at else None,
+        "message_count": 0,
+    }
 
 
 @app.patch("/api/sessions/{session_id}")
-async def rename_session(session_id: str, payload: SessionRename, current_user=Depends(get_current_user)):
+async def rename_session(
+    session_id: str,
+    payload: SessionRename,
+    db: AsyncSession = Depends(get_db_session),
+    current_user=Depends(get_current_user),
+):
     """重命名会话；非本人会话 → 403。"""
-    with crud.get_db() as db:
-        sess = db.get(ConvSession, session_id)
-        if sess is None or sess.user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="无权操作该会话")
-        sess.title = payload.name[:255]
-        return {"id": sess.id, "name": sess.title}
+    sess = await crud_async.get_session_with_messages(db, session_id)
+    if sess is None or sess.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="无权操作该会话")
+    sess.title = payload.name[:255]
+    return {"id": sess.id, "name": sess.title}
 
 
 @app.delete("/api/sessions/{session_id}")
-async def delete_session(session_id: str, current_user=Depends(get_current_user)):
+async def delete_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db_session),
+    current_user=Depends(get_current_user),
+):
     """删除会话（级联删除其消息）；非本人会话 → 403。"""
-    with crud.get_db() as db:
-        sess = db.get(ConvSession, session_id)
-        if sess is None or sess.user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="无权操作该会话")
-        db.delete(sess)
+    sess = await crud_async.get_session_with_messages(db, session_id)
+    if sess is None or sess.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="无权操作该会话")
+    await db.delete(sess)
     return {"ok": True, "id": session_id}
 
 
 # ---------------- 管理员接口（垂直越权测试目标：普通用户访问 → 403） ----------------
 @app.get("/api/admin/users")
-async def admin_list_users(admin=Depends(require_admin)):
+async def admin_list_users(
+    db: AsyncSession = Depends(get_db_session),
+    admin=Depends(require_admin),
+):
     """管理员：查看用户列表。"""
-    with crud.get_db() as db:
-        users = crud.list_users(db)
-        return [
-            {
-                "id": u.id,
-                "username": u.username,
-                "display_name": u.display_name,
-                "role": u.role,
-                "is_active": u.is_active,
-                "created_at": u.created_at.isoformat() if u.created_at else None,
-            }
-            for u in users
-        ]
+    users = await crud_async.list_users(db)
+    return [
+        {
+            "id": u.id,
+            "username": u.username,
+            "display_name": u.display_name,
+            "role": u.role,
+            "is_active": u.is_active,
+            "created_at": u.created_at.isoformat() if u.created_at else None,
+        }
+        for u in users
+    ]
 
 
 @app.get("/api/admin/crisis-audit")
-async def admin_list_crisis_audits(limit: int = 100, admin=Depends(require_admin)):
+async def admin_list_crisis_audits(
+    limit: int = 100,
+    db: AsyncSession = Depends(get_db_session),
+    admin=Depends(require_admin),
+):
     """管理员：查看危机审计记录（合规留痕，仅管理员可见）。"""
-    with crud.get_db() as db:
-        rows = crud.list_crisis_audits(db, limit=limit)
-        return [
-            {
-                "id": r.id,
-                "user_id": r.user_id,
-                "session_id": r.session_id,
-                "crisis_level": r.crisis_level,
-                "keywords_found": json.loads(r.keywords_found) if r.keywords_found else None,
-                "question": r.question,
-                "is_crisis_response": r.is_crisis_response,
-                "detect_method": r.detect_method,
-                "confidence": r.confidence,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-            }
-            for r in rows
-        ]
+    rows = await crud_async.list_crisis_audits(db, limit=limit)
+    return [
+        {
+            "id": r.id,
+            "user_id": r.user_id,
+            "session_id": r.session_id,
+            "crisis_level": r.crisis_level,
+            "keywords_found": json.loads(r.keywords_found) if r.keywords_found else None,
+            "question": r.question,
+            "is_crisis_response": r.is_crisis_response,
+            "detect_method": r.detect_method,
+            "confidence": r.confidence,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
 
 
 @app.on_event("startup")
@@ -641,20 +916,24 @@ async def startup_event():
     print(f"RAG 检索: {'启用' if settings.RAG_ENABLED else '禁用（纯对话模式，不加载重排/BM25）'}")
     print(f"安全检查: {'启用' if settings.SAFETY_ENABLED else '禁用（不加载语义锚点）'}")
     print(f"本地重排: {'启用（' + settings.RERANK_MODEL + '）' if settings.RERANK_ENABLED and settings.RAG_ENABLED else '未启用'}")
+    print(f"并发准入: {settings.AI_ADMISSION_BACKEND}（活跃 {settings.AI_MAX_ACTIVE_REQUESTS} / 队列 {settings.AI_MAX_QUEUED_REQUESTS} / 等待超时 {settings.AI_QUEUE_WAIT_TIMEOUT_SECONDS}s）")
+    # 启动后台持久化 Worker（Queue→Worker→DB；Redis 属 Phase 2，本期不引入）
+    bg_queue.start()
     print("=" * 50)
 
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "api.main:app",
-        host=settings.HOST,
-        port=settings.PORT,
-        reload=settings.DEBUG,
-    )
+@app.on_event("shutdown")
+async def shutdown_event():
+    """关闭时优雅停止后台 Worker。"""
+    try:
+        await bg_queue.shutdown()
+    except Exception as e:
+        print(f"[shutdown][WARN] 后台 Worker 停止异常: {e}", flush=True)
 
 
 # 前端静态资源托管：在 API 路由之后挂载，/api、/docs 等显式路由优先匹配。
+# 注意：必须位于 __main__ 块之前 —— `python api/main.py` 直接运行时若挂在 __main__
+# 之后，_serve() 阻塞执行时挂载代码尚未运行，前端会全部 404（import 方式无此问题）。
 _FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 if _FRONTEND_DIR.exists():
     app.mount(
@@ -662,3 +941,33 @@ if _FRONTEND_DIR.exists():
         StaticFiles(directory=str(_FRONTEND_DIR), html=True),
         name="frontend",
     )
+
+
+if __name__ == "__main__":
+    # Windows 兼容：psycopg(async) 需要 SelectorEventLoop，而本机 uvicorn 版本在
+    # Windows 上无论 --loop 参数都强制 Proactor（uvicorn.run 内部建循环时无视已设策略）。
+    # 解法：自己持有循环 —— 先切 Selector 策略，再由 asyncio.run 创建循环，
+    # 在循环内以 uvicorn.Server 对象方式 serve()（不再走 uvicorn.run 的循环创建）。
+    import asyncio
+    import sys
+
+    if sys.platform == "win32":
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        except AttributeError:
+            pass
+
+    import uvicorn
+
+    async def _serve() -> None:
+        config = uvicorn.Config(
+            app,
+            host=settings.HOST,
+            port=settings.PORT,
+            log_level="info",
+            reload=False,  # 调试热重载请用 DEBUG=False + 手动重启；本入口不启子进程（保 Selector）
+        )
+        server = uvicorn.Server(config)
+        await server.serve()
+
+    asyncio.run(_serve())

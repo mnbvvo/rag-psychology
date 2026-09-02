@@ -411,7 +411,13 @@ function renderChat() {
           <button class="ghost-btn" id="export-session">导出</button>
         </div>
         <div class="message-list" id="message-list" aria-live="polite">${messages.length ? messages.map(renderMessage).join("") : renderWelcome()}</div>
-        <form class="composer" id="chat-form"><textarea id="chat-input" rows="1" placeholder="输入问题，按 Enter 发送，Shift + Enter 换行"></textarea><button class="send-btn" id="send-btn" type="submit" title="发送" aria-label="发送">↑</button></form>
+        <form class="composer" id="chat-form">
+          <textarea id="chat-input" rows="1" placeholder="输入问题，按 Enter 发送，Shift + Enter 换行"></textarea>
+          <div class="composer-actions">
+            <button class="stop-btn is-hidden" id="stop-btn" type="button" title="停止生成（取消排队或中断回答）" aria-label="停止生成">■</button>
+            <button class="send-btn" id="send-btn" type="submit" title="发送" aria-label="发送">↑</button>
+          </div>
+        </form>
       </section>
       <aside class="inspector">
         <div class="section-title"><span>本次对话配置</span></div>
@@ -520,12 +526,24 @@ function appendStreamingBubble() {
   const div = document.createElement("div");
   div.className = "message assistant";
   // 文本独立放进 .streaming-text，来源 chips / 耗时栏是它的兄弟节点（token 更新只改
-  // 文本节点，不误清来源）。返回气泡 DOM 引用由调用方闭包持有：整页重建/并发流存在时
-  // 不再依赖全局 querySelector，避免拿到旧气泡造成答案与来源交叉污染。
-  div.innerHTML = '<div><div class="message-meta">心理 RAG</div><div class="message-bubble"><span class="streaming-text">正在生成…</span></div></div>';
+  // 文本节点，不误清来源）。排队状态行 .queue-status 独立展示，放行后隐藏。
+  div.innerHTML = '<div><div class="message-meta">心理 RAG</div><div class="message-bubble"><span class="queue-status is-hidden"></span><span class="streaming-text">正在生成…</span></div></div>';
   list.appendChild(div);
   list.scrollTop = list.scrollHeight;
-  return { bubble: div.querySelector(".message-bubble"), textEl: div.querySelector(".streaming-text") };
+  return { bubble: div.querySelector(".message-bubble"), textEl: div.querySelector(".streaming-text"), statusEl: div.querySelector(".queue-status") };
+}
+
+// 排队/状态提示（总稿 §4.4：queue 事件 → “前方还有 N 个请求”）
+function showQueueStatus(els, text) {
+  if (!els) return;
+  els.statusEl.textContent = text;
+  els.statusEl.classList.remove("is-hidden");
+}
+
+function hideQueueStatus(els) {
+  if (!els) return;
+  els.statusEl.classList.add("is-hidden");
+  els.statusEl.textContent = "";
 }
 
 function updateStreamingBubble(m, els) {
@@ -562,6 +580,18 @@ function finalizeStreamingBubble(m, els) {
   }
 }
 
+// 准入类错误码 → 用户可读文案（总稿 §4.3.3/§4.4 映射表）
+function admissionErrorText(data) {
+  if (!data) return "";
+  switch (data.code) {
+    case "AI_QUEUE_FULL": return "当前排队已满，请稍后重试";
+    case "AI_QUEUE_TIMEOUT": return "排队等待时间较长，请重新发起";
+    case "AI_REQUEST_IN_PROGRESS": return "你已有问题正在处理，请稍候";
+    case "AI_REQUEST_CANCELLED": return "请求已取消";
+    default: return "";
+  }
+}
+
 async function sendChat(content) {
   const session = currentSession();
   // 中断该会话上一个未完成的流（重复发送/切换时）
@@ -580,6 +610,9 @@ async function sendChat(content) {
   saveState(); renderChat();
   const btn = document.querySelector("#send-btn");
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>'; }
+  // 显示“停止”按钮（排队中/生成中均可取消/中断）
+  const stopBtn = document.querySelector("#stop-btn");
+  if (stopBtn) stopBtn.classList.remove("is-hidden");
 
   // 占位 assistant 消息：SSE 期间增量填充，不整页重绘
   const placeholder = { role: "assistant", content: "", sources: [], timings: null, streaming: true };
@@ -589,7 +622,26 @@ async function sendChat(content) {
   const ac = new AbortController();
   session._streamAbort = ac;
   const started = performance.now();
+  let requestId = null;      // 准入 request_id（queue/started/done 事件带回，用于取消接口）
   try {
+    // 停止/取消：中断本地流 + 尽力通知服务端释放占位（幂等，失败不影响本地）
+    if (stopBtn) {
+      stopBtn.onclick = () => {
+        if (ac.signal.aborted) return;
+        ac.abort();
+        if (requestId) {
+          apiFetch(`/api/query/requests/${encodeURIComponent(requestId)}`, { method: "DELETE" }).catch(() => { /* 尽力而为 */ });
+        }
+        // 无内容时以“已停止”占位；有部分内容时在末尾追加停止标记
+        hideQueueStatus(streamEls);
+        if (!placeholder.content.trim()) {
+          placeholder.content = "（已停止）";
+        } else {
+          placeholder.content += "\n\n（已停止）";
+        }
+        updateStreamingBubble(placeholder, streamEls);
+      };
+    }
     // 多轮记忆：历史 = 除占位外的全部消息（占位尚未有内容，不应发给后端）
     const history = session.messages
       .filter((m) => m !== placeholder)
@@ -608,7 +660,7 @@ async function sendChat(content) {
     });
     if (!resp.ok) {
       let detail = `请求失败（${resp.status}）`;
-      try { const j = await resp.json(); detail = j.detail || detail; } catch { /* noop */ }
+      try { const j = await resp.json(); detail = admissionErrorText(j) || j.detail || detail; } catch { /* noop */ }
       throw new Error(detail);
     }
 
@@ -630,14 +682,26 @@ async function sendChat(content) {
         if (!dataLine) continue;
         let data;
         try { data = JSON.parse(dataLine.slice(6)); } catch { continue; }
-        if (evtName === "sources") {
+        // 未知事件一律忽略（总稿 FR-BE-04：旧前端兼容性）
+        if (evtName === "queue") {
+          // 排队中：展示实时位置（position 为 0 基下标 = 前方请求数）
+          requestId = data.request_id || requestId;
+          if (typeof data.position === "number") {
+            showQueueStatus(streamEls, `排队中 · 前方还有 ${data.position} 个请求`);
+          }
+        } else if (evtName === "started") {
+          requestId = data.request_id || requestId;
+          hideQueueStatus(streamEls);
+        } else if (evtName === "sources") {
           // 只暂存来源数据，不立即渲染：等答案流式生成完成、收尾时再显示，
           // 呈现顺序为「先看答案 → 再展示依据文档与耗时」
           placeholder.sources = data.sources || [];
         } else if (evtName === "token") {
+          hideQueueStatus(streamEls);
           placeholder.content += data.text || "";
           updateStreamingBubble(placeholder, streamEls);
         } else if (evtName === "done") {
+          hideQueueStatus(streamEls);
           if (data.answer != null) placeholder.content = data.answer;
           placeholder.timings = data.timings || null;
           if (data.safety_note) placeholder.safetyNote = data.safety_note;
@@ -646,7 +710,8 @@ async function sendChat(content) {
           // 否则界面停留在"正在生成…"（数据有答案、界面没显示）
           updateStreamingBubble(placeholder, streamEls);
         } else if (evtName === "error") {
-          throw new Error(data.detail || "生成失败");
+          hideQueueStatus(streamEls);
+          throw new Error(admissionErrorText(data) || data.detail || "生成失败");
         }
       }
     }
@@ -654,7 +719,8 @@ async function sendChat(content) {
     showToast(`回答已生成 · ${placeholder.elapsed}ms`, "success");
   } catch (e) {
     if (e.name === "AbortError") {
-      // 用户主动取消（切换会话/删除/新发送），保留已生成部分
+      // 主动中断：用户停止/切换会话/删除/新发送。用户停止时标记已展示在 stop 回调里；
+      // 其余场景保留已生成部分，不做额外文案
     } else {
       placeholder.content = placeholder.content || `请求失败：${e.message}`;
       showToast(e.message, "error");
@@ -663,10 +729,11 @@ async function sendChat(content) {
     placeholder.streaming = false;
     // 仅当自己仍是当前流时才清空句柄：并发场景下旧流 finally 不能误清新流的 abort 引用
     if (session._streamAbort === ac) session._streamAbort = null;
+    if (stopBtn) stopBtn.classList.add("is-hidden");
     finalizeStreamingBubble(placeholder, streamEls);
     // 恢复发送按钮（流式版不 renderChat，按钮不会自动重建，需要手动恢复）
-    const btn = document.querySelector("#send-btn");
-    if (btn) { btn.disabled = false; btn.innerHTML = "↑"; }
+    const liveBtn = document.querySelector("#send-btn");
+    if (liveBtn) { liveBtn.disabled = false; liveBtn.innerHTML = "↑"; }
     saveState();
   }
   // 发送后自动聚焦输入框，便于连续追问

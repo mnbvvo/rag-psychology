@@ -3,9 +3,14 @@ RAG 心理系统并发压测脚本
 ========================
 
 用法示例：
- # 基础：200 个请求，常驻并发 20，打 /api/query（默认 persist=true，会压 SQLite 写）
+ # 基础：200 个请求，常驻并发 20，打 /api/query（默认 persist=true，会压 DB 写）
  python scripts/concurrency_test.py --total 200 --concurrency 20
- python scripts/concurrency_test.py --total 200 --concurrency 20 --output results/c200_c20.json
+
+ # 单账号认证（登录失败会自动注册）
+ python scripts/concurrency_test.py --total 200 --concurrency 20 --username loadtest --password 'Test@123456'
+
+ # 多账号（自动注册 N 个随机 loadtest 账号，轮流使用；QA-2 用 5/20/40 独立账号）
+ python scripts/concurrency_test.py --total 100 --concurrency 20 --num-users 20
 
  # 只压 RAG 检索+生成，不落库（persist=false，隔离 LLM/embedding 瓶颈）
  python scripts/concurrency_test.py --total 200 --concurrency 20 --no-persist
@@ -16,6 +21,10 @@ RAG 心理系统并发压测脚本
  # 自定义服务地址 / 问题文件
  python scripts/concurrency_test.py --url http://127.0.0.1:8000 --questions my_questions.txt
 
+说明：
+ - 项目除 /api/health、/api/auth/* 外全部接口需登录，压测前必须先准备账号；
+ - --num-users N 会通过 /api/auth/register 自动注册 N 个随机账号（写入 users 表，压测后如需清理请自行删除）；
+ - 默认问题池覆盖常规 + 中/高危安全路径，便于同时压到不同分支。
 """
 
 import argparse
@@ -24,6 +33,7 @@ import json
 import random
 import statistics
 import time
+import uuid
 from pathlib import Path
 
 import httpx
@@ -56,13 +66,15 @@ def percentile(values, p):
     return s[f] + (s[c] - s[f]) * (k - f)
 
 
-async def hit_query(client, sem, question, persist, results, stats):
+async def hit_query(client, sem, question, token, persist, results, stats):
     async with sem:
         t0 = time.perf_counter()
         try:
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
             r = await client.post(
                 "/api/query",
                 json={"question": question, "persist": persist},
+                headers=headers,
                 timeout=120.0,
             )
             elapsed = (time.perf_counter() - t0) * 1000
@@ -74,14 +86,16 @@ async def hit_query(client, sem, question, persist, results, stats):
             results.append(("EXC", elapsed, repr(e)))
 
 
-async def hit_stream(client, sem, question, persist, results, stats):
+async def hit_stream(client, sem, question, token, persist, results, stats):
     async with sem:
         t0 = time.perf_counter()
         try:
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
             async with client.stream(
                 "POST",
                 "/api/query/stream",
                 json={"question": question, "persist": persist},
+                headers=headers,
                 timeout=120.0,
             ) as resp:
                 # 读取 SSE，直到收到 done / error 事件
@@ -101,6 +115,40 @@ async def hit_stream(client, sem, question, persist, results, stats):
             results.append(("EXC", elapsed, repr(e)))
 
 
+# ---------------- 认证准备（PRE-1：登录 / 自动注册，返回 token 列表） ----------------
+async def _login_or_register(client, username: str, password: str) -> str:
+    """注册或登录一个账号，返回 access_token。
+
+    策略：先注册（新账号 201；已存在 409），随后登录一次。
+    每个账号只发 1 次登录请求，避免触发服务端 IP 级登录限流。
+    """
+    r = await client.post("/api/auth/register", json={"username": username, "password": password})
+    if r.status_code not in (201, 409):
+        raise RuntimeError(f"注册失败 {username}: {r.status_code} {r.text[:120]}")
+    r = await client.post("/api/auth/login", json={"username": username, "password": password})
+    if r.status_code == 200:
+        return r.json()["access_token"]
+    raise RuntimeError(f"登录失败 {username}: {r.status_code} {r.text[:120]}")
+
+
+async def prepare_tokens(base: str, username: str | None, password: str, num_users: int) -> list[str]:
+    """压测前准备账号 token 列表（单账号 + 多账号随机注册）。"""
+    tokens: list[str] = []
+    async with httpx.AsyncClient(base_url=base, timeout=30.0) as c:
+        if username:
+            tokens.append(await _login_or_register(c, username, password))
+            print(f"[auth] 单账号 {username} 认证成功（当前 {len(tokens)} 个 token）")
+        for _ in range(num_users):
+            u = f"loadtest_{uuid.uuid4().hex[:10]}"
+            tok = await _login_or_register(c, u, "LoadTest@2026")
+            tokens.append(tok)
+        if num_users:
+            print(f"[auth] 已就绪 {len(tokens)} 个压测账号 token（含自动注册 {num_users} 个 loadtest 账号）")
+    if not tokens:
+        raise RuntimeError("未提供任何账号：请用 --username/--password 或 --num-users N")
+    return tokens
+
+
 async def main():
     ap = argparse.ArgumentParser(description="RAG 心理系统并发压测")
     ap.add_argument("--url", default="http://127.0.0.1:8000", help="服务地址")
@@ -111,6 +159,9 @@ async def main():
     ap.add_argument("--questions", help="问题文件路径（每行一条；不填用内置池）")
     ap.add_argument("--ramp", type=float, default=0.0, help="每发一个请求之间的间隔秒（0=立即全部投入）")
     ap.add_argument("--output", help="把每次请求的 {status,latency_ms} 与汇总写入该 JSON 文件（便于留档/对比）")
+    ap.add_argument("--username", default="", help="压测账号用户名（登录失败会自动注册）")
+    ap.add_argument("--password", default="LoadTest@2026", help="压测账号密码（默认 LoadTest@2026）")
+    ap.add_argument("--num-users", type=int, default=0, help="自动注册 N 个随机 loadtest 账号并轮换（QA-2 独立账号场景用）")
     args = ap.parse_args()
 
     if args.questions:
@@ -139,6 +190,15 @@ async def main():
 
     tasks_q = [q for _ in range((args.total + len(questions) - 1) // len(questions)) for q in questions][: args.total]
 
+    # 认证准备（PRE-1）：登录/自动注册拿 token；无账号时不允许裸打（全部接口需登录）
+    if not args.username and args.num_users <= 0:
+        print("未提供压测账号：请用 --username/--password 或 --num-users N（全部业务接口需要登录）。")
+        return
+    tokens = await prepare_tokens(base, args.username or None, args.password, args.num_users)
+
+    # 请求 → 账号轮换分配（独立账号场景：QA-2 的 5/20/40 用户同步起跑）
+    pairs = [(q, tokens[i % len(tokens)]) for i, q in enumerate(tasks_q)]
+
     sem = asyncio.Semaphore(args.concurrency)
     results = []
     stats = {}
@@ -147,13 +207,14 @@ async def main():
     print(f"\n=== 并发压测开始 ===")
     print(f"目标    : {base}{'/api/query' if args.endpoint=='query' else '/api/query/stream'}")
     print(f"总数    : {args.total}   并发: {args.concurrency}   persist: {persist}")
+    print(f"账号    : {len(tokens)} 个（单账号={'是' if args.username else '否'}，随机注册={args.num_users}）")
     print(f"问题池  : {len(questions)} 条（轮流复用）\n")
 
     t_start = time.perf_counter()
     async with httpx.AsyncClient(base_url=base, headers={"Connection": "keep-alive"}) as client:
         tasks = []
-        for q in tasks_q:
-            tasks.append(asyncio.create_task(worker(client, sem, q, persist, results, stats)))
+        for q, tok in pairs:
+            tasks.append(asyncio.create_task(worker(client, sem, q, tok, persist, results, stats)))
             if args.ramp > 0:
                 await asyncio.sleep(args.ramp)
         # 实时进度

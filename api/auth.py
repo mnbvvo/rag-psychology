@@ -120,7 +120,7 @@ def login(body: LoginBody, request: Request):
     # IP 级限流（简单内存，多进程部署需共享存储）
     ip = request.client.host if request.client else "unknown"
     _prune(_login_ip[ip], settings.RATE_LIMIT_SECONDS)
-    if len(_login_ip[ip]) >= 20:
+    if len(_login_ip[ip]) >= settings.LOGIN_IP_MAX_REQUESTS:
         raise HTTPException(status_code=429, detail="登录尝试过于频繁，请稍后再试")
     _login_ip[ip].append(time.time())
 
