@@ -29,6 +29,10 @@ class BM25HybridSearcher:
         """从候选文档构建 BM25 索引（线程安全，重复调用只建一次）。"""
         if self._built:
             return
+        # 空语料直接跳过：BM25Okapi 对 0 篇文档构造会除零（avgdl=0/0），
+        # 且空索引检索无意义。首次问答时若语料仍为空同样跳过，search 返回空列表。
+        if not documents:
+            return
         with self._lock:
             if self._built:
                 return
@@ -36,6 +40,8 @@ class BM25HybridSearcher:
             from rank_bm25 import BM25Okapi
 
             tokenized = [list(jieba.cut(d.page_content or "")) for d in documents]
+            if not tokenized:
+                return
             self._docs = documents
             self._index = BM25Okapi(tokenized, k1=self.k1, b=self.b)
             self._built = True

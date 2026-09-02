@@ -50,8 +50,8 @@ def snapshot_counts(pg: dict) -> dict:
                             password=pg["password"], dbname=pg["db"])
     try:
         with conn.cursor() as cur:
-            tables = ["users", "sessions", "messages", "crisis_audit", "prompts",
-                      "compare_history", "user_chat_history", "langchain_pg_embedding",
+            tables = ["users", "sessions", "messages", "crisis_audit",
+                      "user_chat_history", "langchain_pg_embedding",
                       "langchain_pg_collection"]
             counts = {}
             for t in tables:

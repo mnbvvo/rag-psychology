@@ -79,8 +79,6 @@ class PsychologyRAGSystem:
         self,
         question: str = None,
         check_safety: Optional[bool] = None,
-        system_prompt_override: Optional[str] = None,
-        prompt_id: Optional[str] = None,
         messages: Optional[List[Dict]] = None,
         user_id: Optional[str] = None,
         rag_enabled: Optional[bool] = None,
@@ -94,7 +92,7 @@ class PsychologyRAGSystem:
         纯 LLM 对话）；True 走完整 RAG。
         check_safety：None 用 settings.SAFETY_ENABLED；False 时跳过整条安全链路
         （L0 关键词 + L1 语义 + 回答侧复查），不调 embedding。
-        user_id：当前用户（提示词归属解析，透传至生成阶段）。
+        user_id：当前用户（提示词全局激活项解析，透传至生成阶段）。
         """
         rag_enabled = settings.RAG_ENABLED if rag_enabled is None else bool(rag_enabled)
         check_safety = settings.SAFETY_ENABLED if check_safety is None else bool(check_safety)
@@ -178,8 +176,6 @@ class PsychologyRAGSystem:
         self,
         question: str = None,
         check_safety: Optional[bool] = None,
-        system_prompt_override: Optional[str] = None,
-        prompt_id: Optional[str] = None,
         messages: Optional[List[Dict]] = None,
         user_id: Optional[str] = None,
         rag_enabled: Optional[bool] = None,
@@ -190,12 +186,12 @@ class PsychologyRAGSystem:
         消息提取当前问题用于检索与安全检测，完整历史传给 LLM 作为上下文。
         rag_enabled：None 用 settings.RAG_ENABLED；False 跳过检索纯对话。
         check_safety：None 用 settings.SAFETY_ENABLED；False 跳过整条安全链路。
-        user_id：当前用户（提示词归属解析 + 持久化归属）。
+        user_id：当前用户（提示词全局激活项解析 + 持久化归属）。
         """
         # 全流程墙钟：从 prepare（安全+检索+重排）到生成结束，与 SSE 端点 total 语义一致
         t_query = time.perf_counter()
         check_safety = settings.SAFETY_ENABLED if check_safety is None else bool(check_safety)
-        prep = self.prepare(question, check_safety, system_prompt_override, prompt_id, messages, user_id, rag_enabled=rag_enabled)
+        prep = self.prepare(question, check_safety, messages, user_id, rag_enabled=rag_enabled)
         timings = prep.get("timings") or {}
 
         # 高危：直接返回危机响应（prepare 内已记录全程 total）
@@ -203,10 +199,13 @@ class PsychologyRAGSystem:
             return prep
 
         # 生成
+        # low_relevance：仅「RAG 开启且检索为空」才追加"未检索到资料"说明；
+        # RAG 关闭（纯对话）时没有检索动作，不应向模型声明未检索到资料。
         gen = self.rag.generate(
             prep["question"], prep.get("context") or [],
-            system_prompt_override, prompt_id, timings=timings, messages=prep.get("norm_messages"),
+            timings=timings, messages=prep.get("norm_messages"),
             user_id=user_id,
+            low_relevance=(bool(prep.get("rag_enabled")) and not prep.get("context")),
         )
         prep["answer"] = gen["answer"]
         prep["sources"] = gen["sources"]

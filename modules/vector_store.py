@@ -215,56 +215,6 @@ class PsychologyVectorStore:
         # 重新初始化（重建 collection 记录）
         self._init_pgvector()
 
-    def get_collection_stats(self) -> Dict:
-        """获取集合统计信息"""
-        if self.backend == "pgvector":
-            from sqlalchemy import create_engine, text as sql_text
-
-            engine = create_engine(self._pg_connection(), future=True)
-            with engine.connect() as conn:
-                count = conn.execute(
-                    sql_text(
-                        "SELECT COUNT(*) FROM langchain_pg_embedding e "
-                        "JOIN langchain_pg_collection c ON e.collection_id = c.uuid "
-                        "WHERE c.name = :n"
-                    ),
-                    {"n": self.collection_name},
-                ).scalar() or 0
-            engine.dispose()
-            return {
-                "collection_name": self.collection_name,
-                "document_count": count,
-                "backend": self.backend,
-                "connection": self._pg_connection(),
-            }
-
-        count = self.vectorstore._collection.count()
-        return {
-            "collection_name": self.collection_name,
-            "document_count": count,
-            "persist_directory": self.persist_directory,
-            "backend": self.backend,
-        }
-
-    def as_retriever(self, k: int = None, search_type: str = "similarity"):
-        """返回LangChain retriever对象"""
-        k = k or settings.RERANK_TOP_K
-
-        if search_type == "mmr":
-            return self.vectorstore.as_retriever(
-                search_type="mmr",
-                search_kwargs={
-                    "k": k,
-                    "fetch_k": 20,
-                    "lambda_mult": 0.5,
-                }
-            )
-        else:
-            return self.vectorstore.as_retriever(
-                search_type="similarity",
-                search_kwargs={"k": k}
-            )
-
 
 def _all_documents_from_store() -> List[Document]:
     """从当前向量库读取全量文档（混合检索 BM25 索引构建用）。

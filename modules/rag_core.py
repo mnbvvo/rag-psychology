@@ -163,52 +163,22 @@ class PsychologyRAG:
 
         return docs
 
-    def compress_messages(self, messages: List[Dict]) -> List[Dict]:
-        """【已废弃】对话历史压缩：保留最近 MAX_HISTORY_TURNS 轮，对更早历史做摘要。
-
-        已由向量检索式长期记忆（modules.memory.MemoryService）取代 —— 旧方案把
-        多轮历史全量拼入 prompt，超限部分每次请求调 LLM 做摘要，对话越多耗时/token
-        递增。当前 _build_messages 不再调用本方法，仅保留作回退参考。
-        """
-        max_turns = settings.MAX_HISTORY_TURNS
-        if max_turns <= 0 or len(messages) <= max_turns * 2:
-            return messages
-
-        keep_count = max_turns * 2
-        recent = messages[-keep_count:]
-        older = messages[:-keep_count]
-
-        try:
-            conversation_text = "\n\n".join([
-                f"{'用户' if m['role'] in ('human', 'user') else '助手'}：{m['content']}"
-                for m in older
-            ])
-            summary_prompt = ChatPromptTemplate.from_messages([
-                ("human", "请用一段话简要总结以下心理咨询对话的要点，保留用户核心诉求和关键建议，控制在 200 字以内：\n\n{conversation}"),
-            ])
-            summary_chain = summary_prompt | self.llm | StrOutputParser()
-            summary = summary_chain.invoke({"conversation": conversation_text})
-            if summary and summary.strip():
-                return [{"role": "human", "content": f"前文摘要：{summary.strip()}"}] + recent
-        except Exception:
-            # 摘要失败时回退到截断
-            pass
-
-        return recent
 
     def _build_messages(
         self,
         question: str,
         context: List[Document],
-        system_prompt_override: Optional[str] = None,
-        prompt_id: Optional[str] = None,
         messages: Optional[List[Dict]] = None,
         user_id: Optional[str] = None,
+        low_relevance: Optional[bool] = None,
     ) -> List:
         """组装直接传给 LLM 的消息列表（generate 与 stream_generate 共用）。
 
-        user_id：当前用户（提示词按用户隔离的解析基础，见 prompt_store.build_system_prompt）。
+        user_id：当前用户（透传至提示词解析，见 prompt_store.build_system_prompt）。
         messages：归一化后的多轮历史（含当前问题，见 rag_system._normalize）。
+        low_relevance：是否追加「未检索到足够资料」说明；None 时按 context 为空判定
+        （兼容未显式传参的调用）。RAG 关闭（纯对话）时调用方应显式传 False——
+        没有检索动作，不应向模型声明"本次未检索到资料"。
         本方法同时承载两条记忆通道：
         - 跨会话长期记忆（向量检索，注入 system prompt）；
         - 本会话最近 N 轮原文（human/ai 交替插入，解决指代消解）。
@@ -220,13 +190,12 @@ class PsychologyRAG:
         context_text = "\n\n".join(
             [f"[{i+1}] {doc.page_content}" for i, doc in enumerate(context)]
         )
-        # 低相关提示：检索结果偏弱时，要求模型如实说明而非编造
+        # 低相关提示：仅「RAG 开启且检索为空」时追加，要求模型如实说明而非编造
+        if low_relevance is None:
+            low_relevance = not context
         system_prompt = build_system_prompt(
             context_text=context_text,
-            low_relevance=not context,
-            system_prompt_override=system_prompt_override,
-            prompt_id=prompt_id,
-            user_id=user_id,
+            low_relevance=low_relevance,
         )
 
         # 长期记忆（双通道）：
@@ -267,22 +236,19 @@ class PsychologyRAG:
         self,
         question: str,
         context: List[Document],
-        system_prompt_override: Optional[str] = None,
-        prompt_id: Optional[str] = None,
         timings: Optional[Dict] = None,
         messages: Optional[List[Dict]] = None,
         user_id: Optional[str] = None,
+        low_relevance: Optional[bool] = None,
     ) -> Dict:
-        """基于检索到的内容生成回答
+        """基于检索到的内容生成回答。
 
-        system_prompt_override：非 None 时，使用传入文本作为系统提示词基础，
-        便于前端在不落盘的情况下预览/对比不同提示词的效果。
-        prompt_id：指定使用提示词库中的某条提示词（与 override 互斥，override 优先）。
         messages：多轮对话历史；提供时会把完整历史拼入 prompt，question 仅用于检索与日志。
-        user_id：当前用户（提示词归属解析）。
+        user_id：当前用户（提示词全局激活项解析，透传保留）。
+        low_relevance：是否追加「未检索到足够资料」说明（见 _build_messages）。
         """
         prompt_messages = self._build_messages(
-            question, context, system_prompt_override, prompt_id, messages, user_id
+            question, context, messages, user_id, low_relevance
         )
 
         # 生成回答（LLM 调用是主要耗时来源，单独计时）
@@ -311,17 +277,16 @@ class PsychologyRAG:
         self,
         question: str,
         context: List[Document],
-        system_prompt_override: Optional[str] = None,
-        prompt_id: Optional[str] = None,
         messages: Optional[List[Dict]] = None,
         user_id: Optional[str] = None,
+        low_relevance: Optional[bool] = None,
     ):
         """流式生成：与 generate 相同的提示词组装，逐 token 产出文本块（async generator）。
 
         供 /api/query/stream（SSE）使用：检索已由 prepare 完成，这里只做生成。
         """
         prompt_messages = self._build_messages(
-            question, context, system_prompt_override, prompt_id, messages, user_id
+            question, context, messages, user_id, low_relevance
         )
         async for chunk in self.llm_stream.astream(prompt_messages):
             content = chunk.content if hasattr(chunk, "content") else str(chunk)
@@ -332,8 +297,6 @@ class PsychologyRAG:
     def run(
         self,
         question: str,
-        system_prompt_override: Optional[str] = None,
-        prompt_id: Optional[str] = None,
         timings: Optional[Dict] = None,
         messages: Optional[List[Dict]] = None,
         user_id: Optional[str] = None,
@@ -343,7 +306,7 @@ class PsychologyRAG:
         context = self.retrieve(question, timings=timings)
 
         # 生成
-        result = self.generate(question, context, system_prompt_override, prompt_id, timings=timings, messages=messages, user_id=user_id)
+        result = self.generate(question, context, timings=timings, messages=messages, user_id=user_id)
 
         return {
             "question": question,

@@ -1,7 +1,7 @@
 """关系型数据库初始化（SQLAlchemy，双后端：SQLite / PostgreSQL）。
 
 与向量库互补：本模块负责结构化持久化（用户 / 会话 / 消息 / 危机审计 /
-提示词库 / 对比历史），向量检索由 pgvector（或 Chroma）负责。
+提示词 / 长期记忆），向量检索由 pgvector（或 Chroma）负责。
 使用 SQLAlchemy 抽象，切换数据库仅需修改 settings.DB_URL，业务代码无需改动。
 
 - SQLite：单文件、零部署，本地原型默认；
@@ -28,8 +28,9 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 
 # 历史数据归属账号（所有 user_id 为空的历史行在启动时归入此账号，不可登录）
 LEGACY_USERNAME = "legacy"
-# 需要加 user_id 归属列的表（新增列由轻量迁移补齐；users 表由 create_all 新建）
-_USER_TABLES = ("sessions", "prompts", "compare_history", "crisis_audit")
+# 需要加 user_id 归属列的表（新增列由轻量迁移补齐；users 表由 create_all 新建）。
+# 注意：prompts 不在其中——提示词全局共享、无用户归属，不参与 legacy 归并。
+_USER_TABLES = ("sessions", "crisis_audit")
 
 
 def _table_columns(table: str) -> set[str]:

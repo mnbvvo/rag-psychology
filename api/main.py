@@ -22,20 +22,12 @@ from typing import List, Optional, Dict
 import json
 from modules import rag_system
 from modules.rag_core import build_sources
-from modules.prompt_store import (
-    get_prompt_config,
-    update_prompt_config,
-    reset_prompt_config,
-    ensure_prompts_seeded,
-    ensure_user_prompts,
-    get_prompt_by_id,
-)
 from config.settings import settings
 from db import init_db, crud
-from db.models import Session as ConvSession, CompareHistory
+from db.models import Session as ConvSession
 from api.auth import router as auth_router
 from api.deps import get_current_user, require_admin
-from sqlalchemy import select, desc, func
+from sqlalchemy import select, desc
 import uuid
 
 app = FastAPI(
@@ -78,26 +70,6 @@ def _assert_session_ownership(session_id, user_id: str) -> None:
             raise HTTPException(status_code=403, detail="无权访问该会话")
 
 
-def _assert_prompt_ownership(prompt_id, user_id: str) -> None:
-    """提示词越权：prompt_id 必须属于当前用户（不存在或非本人 → 403）。
-    用于 query 的 prompt_id、update/delete/activeId 等"必须指向本人已有提示词"的场景。
-    """
-    if not prompt_id:
-        return
-    if get_prompt_by_id(prompt_id, user_id) is None:
-        raise HTTPException(status_code=403, detail="无权使用该提示词")
-
-
-def _assert_prompt_owned_or_new(prompt_id, user_id: str) -> None:
-    """完整替换列表的归属预校验：全局已存在但非本人 → 403；全新 id（新增项）放行。"""
-    if not prompt_id:
-        return
-    with crud.get_db() as db:
-        exists_global = crud.get_prompt_row(db, prompt_id) is not None
-    if exists_global and get_prompt_by_id(prompt_id, user_id) is None:
-        raise HTTPException(status_code=403, detail="无权操作该提示词")
-
-
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
     if request.url.path in ("/api/query", "/api/query/stream") and request.method == "POST":
@@ -124,14 +96,6 @@ class QueryRequest(BaseModel):
     messages: Optional[List[Dict[str, str]]] = Field(
         None,
         description="多轮对话历史，每条含 role 与 content；role 可为 human/ai/user/assistant。最后一条须为用户问题。",
-    )
-    system_prompt_override: Optional[str] = Field(
-        None,
-        description="可选：覆盖使用的系统提示词（不落盘），用于前端在不保存的情况下预览/对比提示词效果。",
-    )
-    prompt_id: Optional[str] = Field(
-        None,
-        description="可选：使用提示词库中指定 id 的提示词（与 override 互斥，override 优先）。",
     )
     session_id: Optional[str] = Field(
         None,
@@ -207,13 +171,6 @@ class SessionRename(BaseModel):
     name: str = Field(..., description="新名称")
 
 
-class CompareHistoryItem(BaseModel):
-    """新增一条对比历史记录"""
-    input: str = Field(..., description="对比用的测试问题")
-    a: Dict = Field(..., description="A 侧完整结果（answer/sources/timings 等）")
-    b: Dict = Field(..., description="B 侧完整结果")
-
-
 @app.post("/api/query", response_model=QueryResponse)
 async def query(request: QueryRequest, current_user=Depends(get_current_user)):
     """
@@ -224,7 +181,6 @@ async def query(request: QueryRequest, current_user=Depends(get_current_user)):
     # —— 越权预校验：在调用 LLM 之前快速失败，杜绝资源泄露与算力浪费 ——
     _assert_no_impersonation(request.user_id, current_user.id)
     _assert_session_ownership(request.session_id, current_user.id)
-    _assert_prompt_ownership(request.prompt_id, current_user.id)
 
     try:
         result = await run_in_threadpool(
@@ -232,8 +188,6 @@ async def query(request: QueryRequest, current_user=Depends(get_current_user)):
             question=request.question,
             messages=request.messages,
             check_safety=request.safety_enabled,
-            system_prompt_override=request.system_prompt_override,
-            prompt_id=request.prompt_id,
             user_id=current_user.id,
             rag_enabled=request.rag_enabled,
         )
@@ -334,7 +288,6 @@ async def query_stream(stream_request: Request, request: QueryRequest, current_u
     # 越权预校验（与 /api/query 一致，在调用 LLM 之前快速失败）
     _assert_no_impersonation(request.user_id, current_user.id)
     _assert_session_ownership(request.session_id, current_user.id)
-    _assert_prompt_ownership(request.prompt_id, current_user.id)
 
     async def event_stream():
         try:
@@ -346,8 +299,6 @@ async def query_stream(stream_request: Request, request: QueryRequest, current_u
                 question=request.question,
                 messages=request.messages,
                 check_safety=request.safety_enabled,
-                system_prompt_override=request.system_prompt_override,
-                prompt_id=request.prompt_id,
                 user_id=current_user.id,
                 rag_enabled=request.rag_enabled,
             )
@@ -397,12 +348,12 @@ async def query_stream(stream_request: Request, request: QueryRequest, current_u
             async for chunk in rag_system.rag.stream_generate(
                 prep["question"],
                 prep.get("context") or [],
-                system_prompt_override=request.system_prompt_override,
-                prompt_id=request.prompt_id,
                 # 必须传归一化后的消息（role=human/ai），否则前端 user/assistant
                 # 角色在 _build_messages 里不匹配被静默丢弃，多轮历史全部丢失
                 messages=prep.get("norm_messages"),
                 user_id=current_user.id,
+                # 仅 RAG 开启且检索为空才追加"未检索到资料"说明（纯对话模式不追加）
+                low_relevance=(bool(prep.get("rag_enabled")) and not prep.get("context")),
             ):
                 full.append(chunk)
                 yield _sse("token", {"text": chunk})
@@ -590,143 +541,6 @@ async def delete_session(session_id: str, current_user=Depends(get_current_user)
     return {"ok": True, "id": session_id}
 
 
-@app.get("/api/compare-history")
-async def list_compare_history(limit: int = 50, current_user=Depends(get_current_user)):
-    """列出当前用户的对比历史记录（含 A/B 完整结果）；他人记录不可见。"""
-    with crud.get_db() as db:
-        rows = crud.list_compare_history(db, limit=limit, user_id=current_user.id)
-        return [
-            {
-                "id": r.id,
-                "input": r.input,
-                "a": json.loads(r.result_a) if r.result_a else None,
-                "b": json.loads(r.result_b) if r.result_b else None,
-                "createdAt": r.created_at.isoformat() if r.created_at else None,
-            }
-            for r in rows
-        ]
-
-
-@app.post("/api/compare-history")
-async def add_compare_history(item: CompareHistoryItem, current_user=Depends(get_current_user)):
-    """新增一条对比历史记录（归属当前用户）。"""
-    with crud.get_db() as db:
-        r = crud.add_compare_history(
-            db,
-            item.input,
-            json.dumps(item.a, ensure_ascii=False),
-            json.dumps(item.b, ensure_ascii=False),
-            user_id=current_user.id,
-        )
-        return {
-            "id": r.id,
-            "input": r.input,
-            "a": item.a,
-            "b": item.b,
-            "createdAt": r.created_at.isoformat() if r.created_at else None,
-        }
-
-
-@app.delete("/api/compare-history/{item_id}")
-async def delete_compare_history(item_id: int, current_user=Depends(get_current_user)):
-    """删除一条对比历史记录；非本人记录 → 403。"""
-    with crud.get_db() as db:
-        r = crud.get_compare_history(db, item_id, user_id=current_user.id)
-        if r is None:
-            raise HTTPException(status_code=403, detail="无权操作该记录")
-        db.delete(r)
-    return {"ok": True, "id": item_id}
-
-
-class PromptItem(BaseModel):
-    """提示词库条目"""
-    id: str
-    name: str
-    content: str
-
-
-class PromptAdd(BaseModel):
-    """新增提示词"""
-    name: str
-    content: str
-
-
-class PromptUpdateSingle(BaseModel):
-    """更新单条提示词"""
-    id: str
-    name: Optional[str] = None
-    content: Optional[str] = None
-
-
-class PromptUpdate(BaseModel):
-    """系统提示词库更新请求（局部更新，未提供的字段保持不变）"""
-    prompts: Optional[List[PromptItem]] = Field(None, description="完整替换提示词库")
-    activeId: Optional[str] = Field(None, description="设置当前激活的提示词 id")
-    add: Optional[PromptAdd] = Field(None, description="新增一条提示词")
-    update: Optional[PromptUpdateSingle] = Field(None, description="更新某条提示词")
-    deleteId: Optional[str] = Field(None, description="删除指定 id 的提示词")
-
-
-@app.get("/api/system-prompt")
-async def get_system_prompt(current_user=Depends(get_current_user)):
-    """
-    获取当前用户与默认的系统提示词配置，供前端双栏对比展示。
-    返回 { current: {...}, default: {...} }；current 只含当前用户的提示词（数据隔离）。
-    """
-    # 用户首次访问时自动 seed 出厂默认提示词（幂等）
-    ensure_user_prompts(current_user.id)
-    return get_prompt_config(current_user.id)
-
-
-@app.put("/api/system-prompt")
-async def put_system_prompt(payload: PromptUpdate, current_user=Depends(get_current_user)):
-    """
-    更新当前用户的系统提示词库（持久化到 SQLite 的 prompts 表）。
-    支持增删改、完整替换、设置激活提示词；越权操作他人提示词 id → 403。
-    """
-    # 归属预校验放在 try 外：HTTPException(403) 不能被下方的业务 except 吞成 400
-    if payload.prompts is not None:
-        for item in payload.prompts:
-            if item.id:
-                _assert_prompt_owned_or_new(item.id, current_user.id)
-    if payload.activeId:
-        _assert_prompt_ownership(payload.activeId, current_user.id)
-    if payload.update is not None and payload.update.id:
-        _assert_prompt_ownership(payload.update.id, current_user.id)
-    if payload.deleteId:
-        _assert_prompt_ownership(payload.deleteId, current_user.id)
-    try:
-        update_payload = {}
-        if payload.prompts is not None:
-            update_payload["prompts"] = [p.model_dump() for p in payload.prompts]
-        if payload.activeId is not None:
-            update_payload["activeId"] = payload.activeId
-        if payload.add is not None:
-            update_payload["add"] = payload.add.model_dump()
-        if payload.update is not None:
-            update_payload["update"] = payload.update.model_dump()
-        if payload.deleteId is not None:
-            update_payload["deleteId"] = payload.deleteId
-
-        if not update_payload:
-            raise ValueError("未提供任何更新字段")
-
-        saved = update_prompt_config(update_payload, current_user.id)
-        return {"ok": True, "config": saved}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/api/system-prompt/reset")
-async def reset_system_prompt(current_user=Depends(get_current_user)):
-    """
-    还原当前用户系统提示词为出厂默认（清空该用户的 prompts 并重新 seed）。
-    仅影响当前用户，不影响他人提示词。
-    """
-    saved = reset_prompt_config(current_user.id)
-    return {"ok": True, "config": saved}
-
-
 # ---------------- 管理员接口（垂直越权测试目标：普通用户访问 → 403） ----------------
 @app.get("/api/admin/users")
 async def admin_list_users(admin=Depends(require_admin)):
@@ -770,10 +584,9 @@ async def admin_list_crisis_audits(limit: int = 100, admin=Depends(require_admin
 
 @app.on_event("startup")
 async def startup_event():
-    """启动时验证配置、建表、seed 提示词库"""
+    """启动时验证配置、建表、引导账号"""
     settings.validate()
     init_db()
-    ensure_prompts_seeded()
     # 历史遗留的占位标题会话（“新的对话”等）按最早一条用户消息自动命名（幂等）
     try:
         with crud.get_db() as db:
@@ -783,8 +596,9 @@ async def startup_event():
     except Exception as e:
         print(f"[startup][WARN] 自动命名未执行（不影响启动）: {e}")
     # 预热本地重排模型：后台线程加载（约 5-10 秒），不阻塞启动；
-    # 预热失败静默（问答时自动回退到原排序），保证首次问答不卡顿
-    if settings.RERANK_ENABLED:
+    # 预热失败静默（问答时自动回退到原排序），保证首次问答不卡顿。
+    # 仅 RAG 检索开启时才需要重排/BM25：RAG_ENABLED=False（纯对话模式）时跳过加载。
+    if settings.RERANK_ENABLED and settings.RAG_ENABLED:
         import threading
 
         def _warm_reranker():
@@ -805,8 +619,9 @@ async def startup_event():
 
         threading.Thread(target=_warm_reranker, daemon=True).start()
     # 预热语义危机检测锚点（后台批量 embed 约几秒，不阻塞启动；
-    # 未就绪时问答回退关键词，避免首次请求被同步构建卡住）
-    if settings.SEMANTIC_CHECK_ENABLED:
+    # 未就绪时问答回退关键词，避免首次请求被同步构建卡住）。
+    # 仅安全链路总开关开启时才需要：SAFETY_ENABLED=False 时整条安全检测被跳过，锚点不会被使用。
+    if settings.SEMANTIC_CHECK_ENABLED and settings.SAFETY_ENABLED:
         import threading as _th
 
         def _warm_crisis_detector():
@@ -821,10 +636,11 @@ async def startup_event():
     print("=" * 50)
     print("青少年心理RAG系统已启动")
     print(f"模型: {settings.CHAT_MODEL}")
-    print(f"向量数据库: Chroma")
+    print(f"向量数据库: {settings.VECTOR_BACKEND}")
     print(f"关系数据库: {settings.DB_URL}")
-    print(f"安全检查: {'启用' if settings.SAFETY_CHECK_ENABLED else '禁用'}")
-    print(f"本地重排: {'启用（' + settings.RERANK_MODEL + '）' if settings.RERANK_ENABLED else '禁用'}")
+    print(f"RAG 检索: {'启用' if settings.RAG_ENABLED else '禁用（纯对话模式，不加载重排/BM25）'}")
+    print(f"安全检查: {'启用' if settings.SAFETY_ENABLED else '禁用（不加载语义锚点）'}")
+    print(f"本地重排: {'启用（' + settings.RERANK_MODEL + '）' if settings.RERANK_ENABLED and settings.RAG_ENABLED else '未启用'}")
     print("=" * 50)
 
 

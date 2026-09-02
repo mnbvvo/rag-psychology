@@ -1,6 +1,6 @@
-"""会话 / 消息 / 危机审计 / 用户 的持久化操作。
+"""会话 / 消息 / 危机审计 / 用户 / 提示词 的持久化操作。
 
-与 Chroma 向量库互补：Chroma 负责语义检索，这里负责结构化留痕
+与向量库互补：向量库负责语义检索，这里负责结构化留痕
 （多轮对话可被服务端审计、危机事件可追溯——心理类产品的合规硬伤）。
 
 数据隔离约定：所有读接口必须携带 user_id 过滤；所有按 id 操作必须
@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select, desc, func, text
 
 from . import SessionLocal
-from .models import User, Session, Message, CrisisAudit, Prompt, CompareHistory, UserChatHistory
+from .models import User, Session, Message, CrisisAudit, UserChatHistory
 
 
 @contextmanager
@@ -222,65 +222,6 @@ def list_crisis_audits(db, limit: int = 100, user_id: str | None = None) -> list
     if user_id:
         q = q.where(CrisisAudit.user_id == user_id)
     return db.execute(q).scalars().all()
-
-
-# ---------------- 提示词库（SQLite 持久化，替代原 JSON 文件） ----------------
-def count_prompts(db, user_id: str | None = None) -> int:
-    q = select(func.count()).select_from(Prompt)
-    if user_id:
-        q = q.where(Prompt.user_id == user_id)
-    return db.execute(q).scalar() or 0
-
-
-def list_prompts(db, user_id: str | None = None) -> list[Prompt]:
-    q = select(Prompt).order_by(Prompt.created_at)
-    if user_id:
-        q = q.where(Prompt.user_id == user_id)
-    return db.execute(q).scalars().all()
-
-
-def get_active_prompt_row(db, user_id: str | None = None) -> Prompt | None:
-    q = select(Prompt).where(Prompt.is_active == True)
-    if user_id:
-        q = q.where(Prompt.user_id == user_id)
-    p = db.execute(q).scalars().first()
-    if p is None:
-        q = select(Prompt).order_by(Prompt.created_at)
-        if user_id:
-            q = q.where(Prompt.user_id == user_id)
-        p = db.execute(q).scalars().first()
-    return p
-
-
-def get_prompt_row(db, prompt_id: str, user_id: str | None = None) -> Prompt | None:
-    """按 id 查提示词；传 user_id 时强制归属校验（查不到返回 None → API 层 403）。"""
-    q = select(Prompt).where(Prompt.id == prompt_id)
-    if user_id:
-        q = q.where(Prompt.user_id == user_id)
-    return db.execute(q).scalars().first()
-
-
-# ---------------- 对比历史（用户生成的对比记录，持久化到 SQLite） ----------------
-def add_compare_history(db, input_text: str, result_a: str | None, result_b: str | None, user_id: str | None = None) -> CompareHistory:
-    r = CompareHistory(input=input_text, result_a=result_a, result_b=result_b, user_id=user_id)
-    db.add(r)
-    db.flush()
-    return r
-
-
-def list_compare_history(db, limit: int = 50, user_id: str | None = None) -> list[CompareHistory]:
-    q = select(CompareHistory).order_by(desc(CompareHistory.created_at)).limit(limit)
-    if user_id:
-        q = q.where(CompareHistory.user_id == user_id)
-    return db.execute(q).scalars().all()
-
-
-def get_compare_history(db, item_id: int, user_id: str | None = None) -> CompareHistory | None:
-    """按 id 查对比历史；传 user_id 时强制归属校验（非本人返回 None → API 层 403）。"""
-    q = select(CompareHistory).where(CompareHistory.id == item_id)
-    if user_id:
-        q = q.where(CompareHistory.user_id == user_id)
-    return db.execute(q).scalars().first()
 
 
 # ---------------- 长期记忆（user_chat_history，向量检索式） ----------------

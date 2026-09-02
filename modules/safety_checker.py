@@ -169,7 +169,6 @@ class SafetyChecker:
         result["confidence"] = confidence
         # response_strategy 跟随最终等级
         result["response_strategy"] = self.crisis_data["emergency_response"].get(level, "")
-        # 兼容字段：与 check_and_respond 保持一致 —— 命中危机时附加安全话术，
         # prepare() 的高危拦截/中低危关怀都读 safety_response.message
         if level != "none":
             result["safety_response"] = self.get_crisis_response(level)
@@ -221,16 +220,6 @@ class SafetyChecker:
             "hotlines": hotlines,
             "should_intervene": level in ["high", "medium"],
         }
-
-    def check_and_respond(self, text: str) -> Dict:
-        """检测并返回安全建议"""
-        check_result = self.check_text(text)
-
-        if check_result["is_crisis"]:
-            response = self.get_crisis_response(check_result["level"])
-            check_result["safety_response"] = response
-
-        return check_result
 
     def review_answer(self, answer: str):
         """回答侧安全复查（L0）：LLM 输出命中高危关键词时追加安全提醒。

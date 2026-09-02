@@ -3,7 +3,7 @@
 覆盖用户的两组测试方案：
   1. 鉴权与越权：无 token 401、A 访问 B 资源 403（水平越权）、
      普通 token 访问 admin 接口 403（垂直越权）、请求体篡改 user_id 403；
-  2. 数据隔离：A 写入的数据 B 查不到；提示词越权窃取 403。
+  2. 数据隔离：A 写入的数据 B 查不到（会话消息）。
 
 运行方式（测试环境会自动关闭重排/语义预热，避免加载 2.27GB 模型）：
     python scripts/test_auth.py
@@ -69,8 +69,6 @@ def main():
         print("\n== 无 token 访问受保护接口 → 401 ==")
         noauth_cases = [
             ("GET", "/api/sessions"),
-            ("GET", "/api/system-prompt"),
-            ("GET", "/api/compare-history"),
             ("GET", "/api/auth/me"),
             ("GET", f"/api/sessions/{uuid.uuid4().hex}/messages"),
             ("GET", "/api/admin/users"),
@@ -96,21 +94,11 @@ def main():
         r = c.get("/api/auth/me", headers=bearer(tok_b))
         uid_b = r.json()["id"]
 
-        # ================= A 创建资源（会话/对比/提示词） =================
+        # ================= A 创建资源（会话） =================
         print("\n== A 创建资源 ==")
         r = c.post("/api/sessions", json={"name": "A的会话"}, headers=bearer(tok_a))
         check("A 新建会话 → 200", r.status_code == 200, f"got {r.status_code}")
         sid_a = r.json()["id"]
-        r = c.post("/api/compare-history", json={"input": "测试问题", "a": {"x": 1}, "b": {"x": 2}}, headers=bearer(tok_a))
-        check("A 新建对比记录 → 200", r.status_code == 200, f"got {r.status_code}")
-        cid_a = r.json()["id"]
-        r = c.put("/api/system-prompt", json={"add": {"name": "A的提示词", "content": "A 私密内容"}}, headers=bearer(tok_a))
-        check("A 新增提示词 → 200", r.status_code == 200, f"got {r.status_code}")
-        pid_a = None
-        for p in r.json()["config"]["prompts"]:
-            if p["name"] == "A的提示词":
-                pid_a = p["id"]
-        check("A 的提示词 id 已返回", pid_a is not None, f"config={r.text[:200]}")
 
         # ================= 水平越权：B 访问 A 的资源 → 403 =================
         print("\n== 水平越权（B 访问 A 的资源 → 403） ==")
@@ -120,19 +108,9 @@ def main():
         check("B 改名 A 的会话 → 403", r.status_code == 403, f"got {r.status_code}")
         r = c.delete(f"/api/sessions/{sid_a}", headers=bearer(tok_b))
         check("B 删除 A 的会话 → 403", r.status_code == 403, f"got {r.status_code}")
-        r = c.delete(f"/api/compare-history/{cid_a}", headers=bearer(tok_b))
-        check("B 删除 A 的对比记录 → 403", r.status_code == 403, f"got {r.status_code}")
-        r = c.put("/api/system-prompt", json={"update": {"id": pid_a, "content": "篡改"}}, headers=bearer(tok_b))
-        check("B 更新 A 的提示词 → 403", r.status_code == 403, f"got {r.status_code}")
-        r = c.put("/api/system-prompt", json={"deleteId": pid_a}, headers=bearer(tok_b))
-        check("B 删除 A 的提示词 → 403", r.status_code == 403, f"got {r.status_code}")
-        r = c.put("/api/system-prompt", json={"activeId": pid_a}, headers=bearer(tok_b))
-        check("B 激活 A 的提示词 → 403", r.status_code == 403, f"got {r.status_code}")
-        # 提示词越权窃取：A 的请求里带 B 的提示词 id / 会话 id（应在调用 LLM 前被 403 拦截）
+        # 越权：A 的请求里带 B 的会话 id（应在调用 LLM 前被 403 拦截）
         r = c.post("/api/query", json={"question": "测试", "session_id": sid_a}, headers=bearer(tok_b))
         check("B 用 A 的 session_id 调 query → 403", r.status_code == 403, f"got {r.status_code}")
-        r = c.post("/api/query", json={"question": "测试", "prompt_id": pid_a}, headers=bearer(tok_b))
-        check("B 用 A 的 prompt_id 调 query → 403", r.status_code == 403, f"got {r.status_code}")
 
         # ================= 垂直越权：普通用户访问 admin → 403 =================
         print("\n== 垂直越权（admin 接口） ==")
@@ -159,15 +137,6 @@ def main():
         r = c.get("/api/sessions", headers=bearer(tok_b))
         ids_b = [s["id"] for s in r.json()]
         check("B 的会话列表不含 A 的会话", sid_a not in ids_b, f"leak: {ids_b}")
-        r = c.get("/api/system-prompt", headers=bearer(tok_b))
-        ids_bp = [p["id"] for p in r.json()["current"]["prompts"]]
-        check("B 的提示词库不含 A 的提示词", pid_a not in ids_bp, f"leak: {ids_bp}")
-        r = c.get("/api/system-prompt", headers=bearer(tok_a))
-        ids_ap = [p["id"] for p in r.json()["current"]["prompts"]]
-        check("A 的提示词库含自己的提示词", pid_a in ids_ap, f"missing: {ids_ap}")
-        r = c.get("/api/compare-history", headers=bearer(tok_b))
-        ids_bc = [h["id"] for h in r.json()]
-        check("B 的对比历史不含 A 的记录", cid_a not in ids_bc, f"leak: {ids_bc}")
         # A 的会话经内部 crud 写入一轮消息后，B 依然读不到（模拟 A 已产生对话数据）
         with crud.get_db() as db:
             crud.append_turn(db, sid_a, "A 的私密问题", "A 的私密回答", title="A的会话", user_id=uid_a)

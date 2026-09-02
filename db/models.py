@@ -1,12 +1,10 @@
 """ORM 模型：用户 / 会话 / 消息 / 危机审计 / 长期记忆。
 
-持久化。七张表：
+持久化。五张表：
 - users          用户账号（登录认证 + RBAC 角色）
 - sessions      一次完整对话（前端一个 tab 对应一个）
 - messages      单条消息（人类提问 / AI 回答），按会话外键聚合
 - crisis_audit  危机命中审计（心理类产品的合规可追溯留痕）
-- prompts       系统提示词模板（按用户隔离）
-- compare_history AB 测试记录（按用户隔离）
 - user_chat_history 长期记忆（每轮问答 + embedding，向量检索相似历史）
 """
 import uuid
@@ -86,31 +84,6 @@ class CrisisAudit(Base):
     is_crisis_response: Mapped[bool] = mapped_column(Boolean, default=False)
     detect_method: Mapped[str | None] = mapped_column(String(20), nullable=True)  # keyword / semantic / keyword+semantic
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)  # 语义距离（越小越贴近高危意图原型）
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
-
-
-class Prompt(Base):
-    __tablename__ = "prompts"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)  # 归属用户（提示词按用户隔离）
-    name: Mapped[str] = mapped_column(String(255), default="未命名提示词")
-    content: Mapped[str] = mapped_column(Text, default="")
-    is_active: Mapped[bool] = mapped_column(Boolean, default=False)  # 是否作为 RAG 默认提示词
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow
-    )
-
-
-class CompareHistory(Base):
-    __tablename__ = "compare_history"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)  # 归属用户（对比历史按用户隔离）
-    input: Mapped[str] = mapped_column(Text, nullable=False)  # 对比用的测试问题
-    result_a: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON 编码的 A 侧结果
-    result_b: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON 编码的 B 侧结果
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
