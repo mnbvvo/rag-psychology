@@ -85,6 +85,14 @@ class Settings:
 
     # ============ 生成参数 ============
     CHAT_TEMPERATURE = 0.3  # 生成温度，事实/建议类问答偏低以减少幻觉
+    # LLM 客户端超时/重试（修复 P1：旧值 30s 与排队超时 30s 同界——慢上游首 token 超过
+    # 30s 会被当成故障直接 500、且与排队者 30s 超时形成竞争，Q-03/Q-04 无法按 30±1s 验收）。
+    # 约束：必须严格大于 AI_QUEUE_WAIT_TIMEOUT_SECONDS（validate() 强制），
+    # 使「慢 LLM 仍在正常等待」与「排队者 30s 超时」两个语义解耦。
+    LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
+    LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
+    # embedding 客户端超时（安全 L1/记忆/检索共用；默认 30s 保持原行为，可 env 覆盖）
+    EMBEDDING_TIMEOUT_SECONDS = float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "30"))
 
     # ============ 长期记忆（向量检索式） ============
     # 方案：每轮问答落库 user_chat_history 并打双向量（query 向量 + qa 向量，
@@ -138,13 +146,14 @@ class Settings:
     INIT_ADMIN_PASSWORD = os.getenv("INIT_ADMIN_PASSWORD", "admin123456")
 
     # 登录失败限流（内存级；多进程部署需改用共享存储）
-    LOGIN_MAX_FAILS = 5  # 时间窗内最大失败次数（账号级锁定）
-    LOGIN_LOCK_SECONDS = 900  # 失败锁定时间窗（秒）= 15 分钟
-    LOGIN_IP_MAX_REQUESTS = 200  # 单 IP 60 秒内最大登录请求数（防止单 IP 爆破；并发压测需注册多账号时可调高）
+    LOGIN_MAX_FAILS = int(os.getenv("LOGIN_MAX_FAILS", "5"))  # 时间窗内最大失败次数（账号级锁定）
+    LOGIN_LOCK_SECONDS = int(os.getenv("LOGIN_LOCK_SECONDS", "900"))  # 失败锁定时间窗（秒）= 15 分钟
+    LOGIN_IP_MAX_REQUESTS = int(os.getenv("LOGIN_IP_MAX_REQUESTS", "200"))  # 单 IP 60 秒内最大登录请求数（防止单 IP 爆破；并发压测需注册多账号时可调高）
+    REGISTER_IP_MAX_REQUESTS = int(os.getenv("REGISTER_IP_MAX_REQUESTS", "100"))  # 单 IP 60 秒内最大注册请求数（默认 100，压测建号可注入调高）
 
     # ============ 限流（仅 POST /api/query，内存级；多进程部署需改用共享存储） ============
-    RATE_LIMIT_TIMES = 2000  # 时间窗内单客户端最大请求数
-    RATE_LIMIT_SECONDS = 60  # 限流时间窗长度（秒）
+    RATE_LIMIT_TIMES = int(os.getenv("RATE_LIMIT_TIMES", "2000"))  # 时间窗内单客户端最大请求数
+    RATE_LIMIT_SECONDS = int(os.getenv("RATE_LIMIT_SECONDS", "60"))  # 限流时间窗长度（秒）
 
     # ============ AI 问答并发准入（AdmissionController，总稿 Phase 1 memory） ============
     # 昂贵链路（安全检测/RAG/LLM/持久化）前的统一准入：有界活跃槽位 + 有界 FIFO 队列 +
@@ -215,6 +224,15 @@ class Settings:
             raise ValueError(
                 "JWT_SECRET 未配置或强度不足（<32 字节）：拒绝启动以防止公开密钥伪造身份。"
                 "请在 .env 设置强随机密钥：python -c \"import secrets;print(secrets.token_urlsafe(48))\""
+            )
+        # LLM 超时与排队超时解耦（P1 修复）：LLM 客户端超时必须严格大于排队超时，
+        # 否则慢上游（首 token 30~60s）会被 LLM 超时误杀成 500，排队者也无法按
+        # 30±1s 稳定进入 QUEUE_TIMEOUT（Q-03/Q-04 验收前提）。
+        if cls.LLM_TIMEOUT_SECONDS <= cls.AI_QUEUE_WAIT_TIMEOUT_SECONDS:
+            raise ValueError(
+                f"LLM_TIMEOUT_SECONDS（{cls.LLM_TIMEOUT_SECONDS:.0f}s）必须大于 "
+                f"AI_QUEUE_WAIT_TIMEOUT_SECONDS（{cls.AI_QUEUE_WAIT_TIMEOUT_SECONDS:.0f}s），"
+                "否则慢上游会被 LLM 超时误判为故障，排队超时语义无法独立成立。"
             )
         # 准入后端守卫（fail-closed）：
         # memory 后端（Phase 1）只允许单 worker——多 worker 各自计数会放大实际并发；

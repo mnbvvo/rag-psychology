@@ -1,0 +1,3 @@
+completed=4（期望 4，排空而非丢弃）failed=0
+shutdown 后 enqueue 返回 False（期望 False，拒绝新任务）
+P0-2 优雅关闭排空验证: PASS

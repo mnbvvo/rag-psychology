@@ -27,11 +27,30 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 _login_fails: dict[str, deque] = defaultdict(deque)
 # 登录请求整体限流：IP -> deque（防止单 IP 爆破）
 _login_ip: dict[str, deque] = defaultdict(deque)
+# 注册请求限流：IP -> deque（register 此前无限流，可被批量注册刷 bcrypt/DB）
+_register_ip: dict[str, deque] = defaultdict(deque)
+
+_last_sweep = 0.0  # 上次空桶清扫时间（限流桶键回收用）
 
 
 def _prune(q: deque, window: float) -> None:
     while q and q[0] <= time.time() - window:
         q.popleft()
+
+
+def _sweep_empty_buckets() -> None:
+    """限流桶键回收：defaultdict 的键只 prune 不删除，公网暴露下键数会随来源 IP
+    无限增长（每个 IP 残留一个空 deque）→ 每 10 分钟清扫一次空桶，防内存缓慢泄漏。"""
+    global _last_sweep
+    now = time.time()
+    if now - _last_sweep < 600.0:
+        return
+    if len(_login_fails) + len(_login_ip) + len(_register_ip) < 500:
+        return
+    _last_sweep = now
+    for store in (_login_fails, _login_ip, _register_ip):
+        for key in [k for k, v in store.items() if not v]:
+            del store[key]
 
 
 def _is_locked(username: str) -> bool:
@@ -92,8 +111,20 @@ class LoginBody(BaseModel):
 
 
 @router.post("/register", status_code=201)
-def register(body: RegisterBody):
-    """注册普通用户（role=user）。用户名冲突 → 409；格式/强度不合规 → 400。"""
+def register(body: RegisterBody, request: Request):
+    """注册普通用户（role=user）。用户名冲突 → 409；格式/强度不合规 → 400。
+
+    带单 IP 注册限流（默认 100 次/60s，env REGISTER_IP_MAX_REQUESTS 可调）：
+    register 此前无任何限流，每次注册触发一次 bcrypt cost=12 哈希，可被批量
+    注册刷 CPU 与 DB。
+    """
+    ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    _prune(_register_ip[ip], settings.RATE_LIMIT_SECONDS)
+    if len(_register_ip[ip]) >= settings.REGISTER_IP_MAX_REQUESTS:
+        raise HTTPException(status_code=429, detail="注册过于频繁，请稍后再试")
+    _register_ip[ip].append(now)
+
     username = body.username.strip()
     if not _USERNAME_RE.match(username):
         raise HTTPException(status_code=400, detail="用户名须为 3-32 位字母/数字/下划线")
@@ -110,6 +141,7 @@ def register(body: RegisterBody):
             role="user",
             is_active=True,
         )
+        _sweep_empty_buckets()
         return {"id": user.id, "username": user.username, "display_name": user.display_name, "role": user.role}
 
 
@@ -132,8 +164,14 @@ def login(body: LoginBody, request: Request):
         ok = user is not None and user.is_active and verify_password(body.password, user.password_hash)
         if ok:
             _clear_fails(username)
+            _sweep_empty_buckets()
             return _make_token(user)
-    _record_fail(username)
+    if user is not None:
+        # 仅当账号存在且密码错误时计数：若对不存在的用户名也记失败，攻击者可对
+        # 任意已知用户名盲打 LOGIN_MAX_FAILS 次错误密码，把真实用户锁定
+        # LOGIN_LOCK_SECONDS（认证 DoS，无需知道密码）。
+        _record_fail(username)
+    _sweep_empty_buckets()
     raise HTTPException(status_code=401, detail="用户名或密码错误")
 
 

@@ -1,0 +1,4 @@
+done=20（期望 20）；被取消者终态=error（期望 error/非 done）
+被取消用户 misc_8cf9cb15: sessions=0 messages=0（期望 0/0）
+结束后 active=0 queued=0
+组合验证结论: PASS

@@ -1,0 +1,4 @@
+SSE 连接建立 HTTP 200
+客户端 2s 主动断开（已读 7 行）
+断开后 0.5s: active=0 queued=0
+R-05 结论: PASS

@@ -100,7 +100,7 @@ class PsychologyVectorStore:
             tiktoken_enabled=False,
             check_embedding_ctx_length=False,
             chunk_size=10,
-            timeout=30,       # 上游挂起时及时失败，避免导入/检索永久阻塞
+            timeout=settings.EMBEDDING_TIMEOUT_SECONDS,  # 上游挂起时及时失败，避免导入/检索永久阻塞
             max_retries=2,    # 瞬时网络/限流错误自动重试
         )
 

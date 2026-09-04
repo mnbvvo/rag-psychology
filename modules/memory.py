@@ -36,7 +36,7 @@ class MemoryService:
             tiktoken_enabled=False,
             check_embedding_ctx_length=False,
             chunk_size=10,
-            timeout=30,
+            timeout=settings.EMBEDDING_TIMEOUT_SECONDS,
             max_retries=2,
         )
 

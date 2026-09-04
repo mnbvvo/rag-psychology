@@ -1,0 +1,3 @@
+普通任务不抛=True 危机任务不抛=True
+_persist_failures +2（期望 ≥1） _persist_critical_failures +1（期望 ≥1）
+R-08 函数级结论: PASS

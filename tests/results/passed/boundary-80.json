@@ -1,0 +1,3341 @@
+{
+  "schema_version": 1,
+  "target_commit": "fd976ec2",
+  "generated_at_epoch": 1788405480.8709898,
+  "configuration": {
+    "url": "http://127.0.0.1:8000",
+    "mode": "boundary",
+    "endpoint": "query",
+    "sse_ratio": 0.5,
+    "persist": true,
+    "reuse_question": false,
+    "level": 80,
+    "duration": null,
+    "rounds": null,
+    "strict_boundary": true,
+    "poll_ms": 50.0,
+    "server_initial_capacity": {
+      "backend": "memory",
+      "max_active": 20,
+      "active": 0,
+      "max_queue": 40,
+      "queued": 0,
+      "accepting": true
+    },
+    "test_user_count": 80,
+    "test_user_fingerprints": [
+      "41217d2b3a",
+      "bd6eee2568",
+      "77cfd3aee6",
+      "98e60d6fa4",
+      "0c12d39eb6",
+      "22203dcb29",
+      "7a3b4f499c",
+      "3f5bc06242",
+      "2a7c965933",
+      "8d5190e97e",
+      "5a9f0b1385",
+      "1f691ec20f",
+      "e3657e2249",
+      "3bf94c7919",
+      "082cb639b8",
+      "0b346fb9b6",
+      "b42dfb7dd6",
+      "a0d1506c09",
+      "27b1effc77",
+      "ade78b8f2d",
+      "b671298629",
+      "3da13c3e3a",
+      "9dea7298eb",
+      "bbe64380ba",
+      "5d6e2fd656",
+      "1a5fea9123",
+      "ae6dfd3703",
+      "7884ede348",
+      "baee90a249",
+      "3315712122",
+      "c7b1d22661",
+      "813a18e4bd",
+      "cee639c4d3",
+      "e12de43ce5",
+      "38365fe455",
+      "361b8db319",
+      "3d29ec2e20",
+      "c280261fd5",
+      "b167c7ae65",
+      "61d9c13d85",
+      "9c7a07c033",
+      "8ac240f6cd",
+      "7a9f93bdd7",
+      "ee24dceca7",
+      "013a208315",
+      "aaf53352ca",
+      "73078f70b1",
+      "25b9bdd96f",
+      "5fd7c7d8df",
+      "afe8961ab2",
+      "2db678473f",
+      "0f2723703f",
+      "9a464360a2",
+      "2dbe384b81",
+      "58c7336f71",
+      "aeb80edc62",
+      "203512d7fb",
+      "31c9332047",
+      "9cb0b32524",
+      "045ed4765a",
+      "cc064ad6c7",
+      "4656f58942",
+      "1a2b2fe5a6",
+      "302243083f",
+      "ccd0c32b18",
+      "6eadfa14fe",
+      "c8af060ee5",
+      "a8715d727e",
+      "79cc6a9df5",
+      "f014c884fc",
+      "1fc2f8ab35",
+      "155387f3b1",
+      "d0ba3258a9",
+      "3c2dd38464",
+      "fd1cbc3c8a",
+      "e5d1114687",
+      "19b23913b4",
+      "9d6eb9fb09",
+      "21e29e5d6e",
+      "9d8ad529e7"
+    ],
+    "seed": 20260903
+  },
+  "wall_seconds": 17.35,
+  "summary": {
+    "requests": 80,
+    "admitted": 60,
+    "business_success": 60,
+    "correct_rejections": 20,
+    "unexpected_failures": 0,
+    "success_rate_admitted": 1.0,
+    "http_statuses": {
+      "200": 60,
+      "429": 20
+    },
+    "terminals": {
+      "done": 60,
+      "rejected": 20
+    },
+    "ttft_ms": {
+      "count": 0,
+      "mean": null,
+      "p50": null,
+      "p95": null,
+      "p99": null,
+      "max": null
+    },
+    "total_ms": {
+      "count": 60,
+      "mean": 11489.9,
+      "p50": 11488.0,
+      "p95": 17226.5,
+      "p99": 17233.4,
+      "max": 17237.1
+    },
+    "queue_wait_ms": {
+      "count": 60,
+      "mean": 5665.6,
+      "p50": 5657.1,
+      "p95": 11366.2,
+      "p99": 11387.1,
+      "max": 11410.4
+    }
+  },
+  "monitor_summary": {
+    "capacity_samples": 278,
+    "active_max": 20,
+    "queued_max": 40,
+    "health": {
+      "count": 17,
+      "mean": 2.5,
+      "p50": 1.8,
+      "p95": 4.9,
+      "p99": 10.7,
+      "max": 12.2
+    },
+    "health_failures": 0,
+    "monitor_errors": []
+  },
+  "evaluation": {
+    "passed": true,
+    "checks": {
+      "active_not_exceeded": {
+        "passed": true,
+        "actual": 20,
+        "expected": "<= 20"
+      },
+      "queue_not_exceeded": {
+        "passed": true,
+        "actual": 40,
+        "expected": "<= 40"
+      },
+      "health_success": {
+        "passed": true,
+        "actual": 0,
+        "expected": "0"
+      },
+      "health_p95": {
+        "passed": true,
+        "actual": 4.9,
+        "expected": "<= 200 ms"
+      },
+      "exact_queue_full_rejections": {
+        "passed": true,
+        "actual": 20,
+        "expected": "== 20"
+      },
+      "active_peak_reached": {
+        "passed": true,
+        "actual": 20,
+        "expected": "== 20"
+      },
+      "queue_peak_reached": {
+        "passed": true,
+        "actual": 40,
+        "expected": "== 40"
+      },
+      "queue_full_rejection_p95": {
+        "passed": true,
+        "actual": 196.3,
+        "expected": "<= 1000 ms"
+      },
+      "no_unexpected_failures": {
+        "passed": true,
+        "actual": 0,
+        "expected": "0"
+      }
+    },
+    "threshold_profile": {
+      "min_success_rate": 0.98,
+      "ttft_p95_ms": 12000.0,
+      "total_p95_ms": 20000.0,
+      "health_p95_ms": 200.0
+    }
+  },
+  "samples": [
+    {
+      "index": 0,
+      "worker_id": 0,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "ff321aa1983e48aeb6c5dce034983083",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5724.6179999783635,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 1,
+      "worker_id": 1,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "f8e8c359600043b595cec3cebc6fd2cc",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5778.383299999405,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 2,
+      "worker_id": 2,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "20aa579d58264ab0a2bb9ae5697abe2f",
+      "queued": true,
+      "queue_wait_ms": 5649.8,
+      "ttft_ms": null,
+      "total_ms": 11542.065399989951,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 3,
+      "worker_id": 3,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "3a943b2e488d42f497b384f5072b87ab",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5723.9092999952845,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 4,
+      "worker_id": 4,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "08daf361dd77419e931777b5c9f4d212",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5781.696300022304,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 5,
+      "worker_id": 5,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "e988c26d7e4649b7a0957457b6b9df32",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5782.946200022707,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 6,
+      "worker_id": 6,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "a0bfa15edea04455997dca7f9b7e076b",
+      "queued": true,
+      "queue_wait_ms": 5622.7,
+      "ttft_ms": null,
+      "total_ms": 11344.956900022225,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 7,
+      "worker_id": 7,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "997f479aea0b4f0999cf70e3c81ce128",
+      "queued": true,
+      "queue_wait_ms": 5655.0,
+      "ttft_ms": null,
+      "total_ms": 11455.748899985338,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 8,
+      "worker_id": 8,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "ba5077b5d6ec47cabafa3d332fa9632c",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5808.413900027517,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 9,
+      "worker_id": 9,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "fa55a49100434b2c96811e32f8e75918",
+      "queued": true,
+      "queue_wait_ms": 11309.2,
+      "ttft_ms": null,
+      "total_ms": 17112.529200006975,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 10,
+      "worker_id": 10,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "ba6dea54192a4431834d60e9cee988be",
+      "queued": true,
+      "queue_wait_ms": 5645.5,
+      "ttft_ms": null,
+      "total_ms": 11466.531199985184,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 11,
+      "worker_id": 11,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "7a309320cb024aaba145ce5d63576160",
+      "queued": true,
+      "queue_wait_ms": 5665.3,
+      "ttft_ms": null,
+      "total_ms": 11542.829100013478,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 12,
+      "worker_id": 12,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "808c09ef9c5748d2b69944ed67aa9a87",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5775.017800013302,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 13,
+      "worker_id": 13,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "0e6881c1b5e34d1dad087ce1a8c8468f",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5772.601700009545,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 14,
+      "worker_id": 14,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "1ea693bfcc89403980ca1a56ed512883",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5846.416699991096,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 15,
+      "worker_id": 15,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "fcc67a5333644611bcf82c66627855dd",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5775.783000019146,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 16,
+      "worker_id": 16,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "4ade07e1f9444a9894fd816df77c2904",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5845.792400010396,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 17,
+      "worker_id": 17,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "8e9afa7cf70e44788fbd55f53ab0940b",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5833.698700007517,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 18,
+      "worker_id": 18,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "6c3aa67f6a5d410b824683f6908956d6",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5775.009600009071,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 19,
+      "worker_id": 19,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "66fd955822cd427fa11a480b2ee45ec1",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5833.793800004059,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 20,
+      "worker_id": 20,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "467c58d444944341b4d724aef8d25e4b",
+      "queued": true,
+      "queue_wait_ms": 5612.2,
+      "ttft_ms": null,
+      "total_ms": 11454.174799990142,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 21,
+      "worker_id": 21,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "2a81e34d1ec14ee78c4e3df0a8cf45ee",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5774.352600012207,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 22,
+      "worker_id": 22,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "6fd5c88230bc4cf4bd252801184ca1f6",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5775.884799979394,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 23,
+      "worker_id": 23,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "9b7e7b1db53e4167a7a6c607f5d095c9",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5847.031599987531,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 24,
+      "worker_id": 24,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "41d079aaf9644610bc08e9bdcef9b9cd",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5806.819399993401,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 25,
+      "worker_id": 25,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "9a9c6bb5d0ec4beabca59064043ea50b",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5805.613100004848,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 26,
+      "worker_id": 26,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "6e353aebc2964d2787bfe1dd74c4da02",
+      "queued": true,
+      "queue_wait_ms": 5656.9,
+      "ttft_ms": null,
+      "total_ms": 11465.001800010214,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 27,
+      "worker_id": 27,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "ceffd841ffd24545b3782212d12f78ed",
+      "queued": true,
+      "queue_wait_ms": 5655.3,
+      "ttft_ms": null,
+      "total_ms": 11536.84520002571,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 28,
+      "worker_id": 28,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "617239417031402a971d298396692ad5",
+      "queued": true,
+      "queue_wait_ms": 5657.0,
+      "ttft_ms": null,
+      "total_ms": 11463.67339999415,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 29,
+      "worker_id": 29,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "635579348d7b4118a5eaa38e431aa1b1",
+      "queued": true,
+      "queue_wait_ms": 5657.1,
+      "ttft_ms": null,
+      "total_ms": 11509.90649999585,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 30,
+      "worker_id": 30,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "987568d33095404483a2952819c45296",
+      "queued": true,
+      "queue_wait_ms": 5645.5,
+      "ttft_ms": null,
+      "total_ms": 11463.81129999645,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 31,
+      "worker_id": 31,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "1f3d6dbdcbd24626b73a80eb06a6f26b",
+      "queued": true,
+      "queue_wait_ms": 11312.2,
+      "ttft_ms": null,
+      "total_ms": 17230.796599993482,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 32,
+      "worker_id": 32,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "85410908b2db489698f9280788e5fad5",
+      "queued": false,
+      "queue_wait_ms": 0.0,
+      "ttft_ms": null,
+      "total_ms": 5805.184900003951,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 33,
+      "worker_id": 33,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 176.73830001149327,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 34,
+      "worker_id": 34,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "b3862ee52b3a4c129bacb64a214c0455",
+      "queued": true,
+      "queue_wait_ms": 5693.3,
+      "ttft_ms": null,
+      "total_ms": 11508.340300002601,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 35,
+      "worker_id": 35,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "7afb3ba576c24dc5baa4db21fe11d3e6",
+      "queued": true,
+      "queue_wait_ms": 5693.2,
+      "ttft_ms": null,
+      "total_ms": 11507.113499974366,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 36,
+      "worker_id": 36,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "54d3e812cfe94397a81caaff9cb209dc",
+      "queued": true,
+      "queue_wait_ms": 11201.9,
+      "ttft_ms": null,
+      "total_ms": 16968.450600019423,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 37,
+      "worker_id": 37,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "f9f41ce0e0b94472aa2b1591bdcb512a",
+      "queued": true,
+      "queue_wait_ms": 5705.6,
+      "ttft_ms": null,
+      "total_ms": 11509.347499988507,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 38,
+      "worker_id": 38,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "c9cc22b03be14a75983cdab2c8c88a83",
+      "queued": true,
+      "queue_wait_ms": 5665.5,
+      "ttft_ms": null,
+      "total_ms": 11488.227700028801,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 39,
+      "worker_id": 39,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "217d2fbdcea24036bdb994b35fee25bc",
+      "queued": true,
+      "queue_wait_ms": 11338.7,
+      "ttft_ms": null,
+      "total_ms": 17214.629800000694,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 40,
+      "worker_id": 40,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "3b3610a5cdaf4539b9622d2dc6690754",
+      "queued": true,
+      "queue_wait_ms": 5665.6,
+      "ttft_ms": null,
+      "total_ms": 11487.687099986942,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 41,
+      "worker_id": 41,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "9e43d809f68f48358d11bf2cfe112f15",
+      "queued": true,
+      "queue_wait_ms": 11351.4,
+      "ttft_ms": null,
+      "total_ms": 17197.50069998554,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 42,
+      "worker_id": 42,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 201.07819998520426,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 43,
+      "worker_id": 43,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "ef7a30740a644c028ef23837a44134d1",
+      "queued": true,
+      "queue_wait_ms": 11309.6,
+      "ttft_ms": null,
+      "total_ms": 17213.709900010144,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 44,
+      "worker_id": 44,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "ce5254e2ee854a9face97172407fd6f5",
+      "queued": true,
+      "queue_wait_ms": 11311.6,
+      "ttft_ms": null,
+      "total_ms": 17138.145800010534,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 45,
+      "worker_id": 45,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "4f497e4290b54181b5620d469b8a6390",
+      "queued": true,
+      "queue_wait_ms": 11312.1,
+      "ttft_ms": null,
+      "total_ms": 17107.52279998269,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 46,
+      "worker_id": 46,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "76e59e9b086b4c34ac1dfea12c7b2a75",
+      "queued": true,
+      "queue_wait_ms": 11341.6,
+      "ttft_ms": null,
+      "total_ms": 17190.91400000616,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 47,
+      "worker_id": 47,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "f1a526bcb0834eec88fce1e725ab2ff4",
+      "queued": true,
+      "queue_wait_ms": 11348.0,
+      "ttft_ms": null,
+      "total_ms": 17196.47769999574,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 48,
+      "worker_id": 48,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "ea3a55ef19644f53ad925d4a3edb8d57",
+      "queued": true,
+      "queue_wait_ms": 11312.8,
+      "ttft_ms": null,
+      "total_ms": 17228.155599994352,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 49,
+      "worker_id": 49,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "b78fbb0c0611460296ae1dae3f79dc8e",
+      "queued": true,
+      "queue_wait_ms": 5649.9,
+      "ttft_ms": null,
+      "total_ms": 11448.71240001521,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 50,
+      "worker_id": 50,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "27137dc9e5f247c5b3fd91478fd521c4",
+      "queued": true,
+      "queue_wait_ms": 11366.7,
+      "ttft_ms": null,
+      "total_ms": 17237.10110000684,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 51,
+      "worker_id": 51,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "9a42aac96d5d41aca7af11cfa23dee2a",
+      "queued": true,
+      "queue_wait_ms": 11370.9,
+      "ttft_ms": null,
+      "total_ms": 17214.34040000895,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 52,
+      "worker_id": 52,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 166.81100000278093,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 53,
+      "worker_id": 53,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "9df2ba98e3354a369d1b911dc241e6fd",
+      "queued": true,
+      "queue_wait_ms": 11366.2,
+      "ttft_ms": null,
+      "total_ms": 17225.730200007092,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 54,
+      "worker_id": 54,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "26ceff98e1244a1ba2d97faebe8afccc",
+      "queued": true,
+      "queue_wait_ms": 5667.4,
+      "ttft_ms": null,
+      "total_ms": 11486.421799985692,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 55,
+      "worker_id": 55,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 165.79289999208413,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 56,
+      "worker_id": 56,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "a2543919a56643d99473c0107edeb7e5",
+      "queued": true,
+      "queue_wait_ms": 11410.4,
+      "ttft_ms": null,
+      "total_ms": 17226.36179998517,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 57,
+      "worker_id": 57,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "3b683cf6adec43b5a9df2bccab943c79",
+      "queued": true,
+      "queue_wait_ms": 11366.0,
+      "ttft_ms": null,
+      "total_ms": 17213.284600002225,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 58,
+      "worker_id": 58,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "81935c0f097a4c6990e33b81e798ef70",
+      "queued": true,
+      "queue_wait_ms": 5705.8,
+      "ttft_ms": null,
+      "total_ms": 11533.452900010161,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 59,
+      "worker_id": 59,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "23231bf1998b47c3bfabf4e7587abc9d",
+      "queued": true,
+      "queue_wait_ms": 11339.5,
+      "ttft_ms": null,
+      "total_ms": 17210.624400002416,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 60,
+      "worker_id": 60,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "e548b1a66b1e49e7b401ef5fe44cc7e7",
+      "queued": true,
+      "queue_wait_ms": 5703.2,
+      "ttft_ms": null,
+      "total_ms": 11576.284300012048,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 61,
+      "worker_id": 61,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 188.63290001172572,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 62,
+      "worker_id": 62,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "cba6843e903145bd87e572035b5a23b0",
+      "queued": true,
+      "queue_wait_ms": 11309.5,
+      "ttft_ms": null,
+      "total_ms": 17224.5597000001,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 63,
+      "worker_id": 63,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 181.04480000329204,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 64,
+      "worker_id": 64,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 172.2011000092607,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 65,
+      "worker_id": 65,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 185.58049999410287,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 66,
+      "worker_id": 66,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 179.25129999639466,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 67,
+      "worker_id": 67,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 174.9353000195697,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 68,
+      "worker_id": 68,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 175.0750000064727,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 69,
+      "worker_id": 69,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 182.17220000224188,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 70,
+      "worker_id": 70,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 170.913300011307,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 71,
+      "worker_id": 71,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 194.0552000014577,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 72,
+      "worker_id": 72,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 196.09079998917878,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 73,
+      "worker_id": 73,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "3003b9a2f0c74a62adecb5921bbe6cb0",
+      "queued": true,
+      "queue_wait_ms": 11341.7,
+      "ttft_ms": null,
+      "total_ms": 17188.039700005902,
+      "answer_chars": 104,
+      "detail": ""
+    },
+    {
+      "index": 74,
+      "worker_id": 74,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 195.14590001199394,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 75,
+      "worker_id": 75,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 194.17789997532964,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 76,
+      "worker_id": 76,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 187.73659999715164,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 77,
+      "worker_id": 77,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 192.44009998510592,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 78,
+      "worker_id": 78,
+      "endpoint": "query",
+      "http_status": 429,
+      "terminal": "rejected",
+      "success": false,
+      "correct_rejection": true,
+      "error_code": "AI_QUEUE_FULL",
+      "request_id": "",
+      "queued": false,
+      "queue_wait_ms": null,
+      "ttft_ms": null,
+      "total_ms": 188.72569999075495,
+      "answer_chars": 0,
+      "detail": "当前排队已满，请稍后重试"
+    },
+    {
+      "index": 79,
+      "worker_id": 79,
+      "endpoint": "query",
+      "http_status": 200,
+      "terminal": "done",
+      "success": true,
+      "correct_rejection": false,
+      "error_code": "",
+      "request_id": "c9b1f5cfb5bd4dd28d4c9e2df1dbeef5",
+      "queued": true,
+      "queue_wait_ms": 11342.5,
+      "ttft_ms": null,
+      "total_ms": 17191.273200005526,
+      "answer_chars": 104,
+      "detail": ""
+    }
+  ],
+  "capacity_series": [
+    {
+      "elapsed_ms": 0.000500003807246685,
+      "active": 0,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 55.16059999354184,
+      "active": 0,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 115.69850001251325,
+      "active": 0,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 169.729199988069,
+      "active": 20,
+      "queued": 2,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 282.6634999946691,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 353.5535999981221,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 416.1984999955166,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 479.8046000069007,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 540.7618999888655,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 601.8860999902245,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 663.2208999944851,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 724.0264000138268,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 786.125999991782,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 847.8420999890659,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 910.4363000078592,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 972.3087000020314,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 1034.6323999983724,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 1095.6421000009868,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 1157.689899991965,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 1220.2212999982294,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 1282.7875000075437,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 1344.660600007046,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 1407.0691000088118,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 1468.7796999933198,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 1531.2776000064332,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 1593.0704000056721,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 1655.7422000041697,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 1717.7336000022478,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 1780.262699990999,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 1841.8223999906331,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 1903.9975999912713,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 1966.095400013728,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 2026.810999988811,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 2089.4637999881525,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 2151.889900007518,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 2213.1737000017893,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 2274.897299997974,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 2337.8463000117335,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 2399.0980999951717,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 2461.1796000099275,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 2522.8295999986585,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 2585.7329000136815,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 2647.5973000051454,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 2710.6656999967527,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 2771.3887999998406,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 2833.858700003475,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 2896.363300009398,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 2958.623999991687,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 3020.350700011477,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 3082.8661000123248,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 3144.9695999908727,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 3207.263399992371,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 3268.2950999878813,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 3330.8278000040445,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 3392.769900005078,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 3454.9571000097785,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 3516.931199992541,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 3578.990200010594,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 3641.770899994299,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 3702.9889000114053,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 3764.300800015917,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 3826.475100009702,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 3889.4698999938555,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 3953.3040999958757,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 4016.4134000078775,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 4080.426600005012,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 4143.448799994076,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 4206.310900015524,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 4269.307100010337,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 4332.305399992038,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 4395.377000008011,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 4458.156400010921,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 4520.130599994445,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 4583.195599989267,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 4646.244800009299,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 4708.619200013345,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 4771.7664999945555,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 4832.62719999766,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 4894.861900014803,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 4956.883200007724,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 5019.194900000002,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 5079.736899991985,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 5142.382299993187,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 5204.752999998163,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 5266.25069999136,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 5328.689399990253,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 5390.216700005112,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 5452.168299991172,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 5515.669899992645,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 5575.867000006838,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 5637.178400007542,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 5699.177600006806,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 5761.137599998619,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 5823.011600004975,
+      "active": 20,
+      "queued": 40,
+      "accepting": false
+    },
+    {
+      "elapsed_ms": 5876.323500007857,
+      "active": 20,
+      "queued": 29,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 5950.264899991453,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 6025.610799988499,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 6088.032600004226,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 6151.729300006991,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 6214.435000001686,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 6277.2848999884445,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 6340.95489999163,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 6402.624999987893,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 6465.014399989741,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 6527.032899990445,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 6589.990300009958,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 6651.491199998418,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 6713.521800003946,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 6776.550700014923,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 6839.520999987144,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 6902.715200005332,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 6964.591600000858,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 7026.87750000041,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 7088.372600002913,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 7151.387699996121,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 7213.305699988268,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 7276.895299990429,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 7339.859800005797,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 7402.733399998397,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 7464.546400005929,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 7525.694500014652,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 7588.240000011865,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 7649.728599993978,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 7712.359099998139,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 7774.7925000148825,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 7838.146800000686,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 7899.804999993648,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 7963.225499988766,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 8024.607100000139,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 8086.202000005869,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 8149.556899996242,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 8211.36149999802,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 8273.61760000349,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 8334.872700012056,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 8396.61240001442,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 8457.936699996935,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 8519.831499987049,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 8581.354299996747,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 8643.675300001632,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 8706.954699999187,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 8768.855600006646,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 8831.356800015783,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 8893.359500012593,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 8955.87850001175,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 9017.857900005765,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 9080.680299986852,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 9143.38829999906,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 9205.607899988536,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 9267.051600007107,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 9329.589300003136,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 9391.780200006906,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 9453.971700015245,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 9515.768799989019,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 9578.173799993237,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 9639.76009999169,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 9700.326399994083,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 9761.362399993232,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 9824.376000004122,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 9884.329299995443,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 9944.912600010866,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 10007.86790001439,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 10069.38880000962,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 10131.972700008191,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 10194.97529999353,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 10258.153900009347,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 10321.258100011619,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 10383.212399989134,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 10445.206300006248,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 10509.273300005589,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 10572.201900009532,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 10635.22299999022,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 10697.309000010137,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 10759.901999990689,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 10823.006499995245,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 10883.771599998,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 10945.855500001926,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 11008.391400013352,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 11071.278899995377,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 11133.184100006474,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 11195.006800000556,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 11256.989899993641,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 11320.16949998797,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 11381.885999988299,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 11443.95970000187,
+      "active": 20,
+      "queued": 20,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 11504.34509999468,
+      "active": 20,
+      "queued": 19,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 11557.01429999317,
+      "active": 20,
+      "queued": 12,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 11642.143500008387,
+      "active": 20,
+      "queued": 1,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 11738.362200005213,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 11801.280699990457,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 11865.377700014506,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 11926.308099995367,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 11990.299199998844,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 12053.274900012184,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 12116.284499992616,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 12179.394800012233,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 12242.402200005017,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 12305.326500005322,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 12367.54390000715,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 12427.751200011699,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 12489.428500004578,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 12551.389500004007,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 12615.332199988188,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 12679.376399988541,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 12741.894800012233,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 12804.845200007549,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 12867.839300015476,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 12930.944499996258,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 12994.925200007856,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 13057.935199991334,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 13119.778599997517,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 13181.300099997316,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 13243.441800004803,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 13304.220999998506,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 13366.095000004862,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 13428.461800009245,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 13489.403799991123,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 13551.385200000368,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 13612.466599995969,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 13674.914500006707,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 13736.801899998682,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 13798.975999990944,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 13861.070699989796,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 13921.158400014974,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 13982.763000007253,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 14045.781900000293,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 14107.787499990081,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 14170.839099999284,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 14234.06749998685,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 14294.988400011789,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 14357.070700003533,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 14419.548500009114,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 14482.503500010353,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 14545.565700012958,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 14607.340499991551,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 14669.743000005838,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 14732.724800007418,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 14795.506099995691,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 14858.305100002326,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 14922.781900007976,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 14985.033500008285,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 15047.055500006536,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 15108.861699991394,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 15172.300900012488,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 15233.553099998971,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 15295.509499992477,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 15357.40929999156,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 15419.38440001104,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 15481.499599991366,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 15545.057899988024,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 15608.560699998634,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 15671.31080001127,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 15731.832499994198,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 15794.630799995502,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 15855.982900015078,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 15918.531400006032,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 15981.782699993346,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 16043.209399998887,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 16105.064900009893,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 16167.963199986843,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 16231.192200008081,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 16292.964699998265,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 16354.833699995652,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 16416.39060000307,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 16477.676300011808,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 16540.11180001544,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 16603.617799992207,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 16665.778599999612,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 16728.318500012392,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 16791.299100004835,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 16855.18780001439,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 16917.728700005682,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 16979.285100009292,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 17042.20530000748,
+      "active": 20,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 17105.611900013173,
+      "active": 19,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 17167.937499994878,
+      "active": 19,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 17229.958699987037,
+      "active": 17,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 17291.42850000062,
+      "active": 16,
+      "queued": 0,
+      "accepting": true
+    },
+    {
+      "elapsed_ms": 17347.238599992124,
+      "active": 0,
+      "queued": 0,
+      "accepting": true
+    }
+  ],
+  "health_series": [
+    {
+      "elapsed_ms": 0.000500003807246685,
+      "status": 200,
+      "latency_ms": 1.141399989137426
+    },
+    {
+      "elapsed_ms": 1034.6323999983724,
+      "status": 200,
+      "latency_ms": 1.8944000185001642
+    },
+    {
+      "elapsed_ms": 2089.4637999881525,
+      "status": 200,
+      "latency_ms": 1.8386000010650605
+    },
+    {
+      "elapsed_ms": 3144.9695999908727,
+      "status": 200,
+      "latency_ms": 2.3151999921537936
+    },
+    {
+      "elapsed_ms": 4206.310900015524,
+      "status": 200,
+      "latency_ms": 1.9333999953232706
+    },
+    {
+      "elapsed_ms": 5266.25069999136,
+      "status": 200,
+      "latency_ms": 1.9912999996449798
+    },
+    {
+      "elapsed_ms": 6277.2848999884445,
+      "status": 200,
+      "latency_ms": 1.6681000124663115
+    },
+    {
+      "elapsed_ms": 7339.859800005797,
+      "status": 200,
+      "latency_ms": 1.6997999919112772
+    },
+    {
+      "elapsed_ms": 8396.61240001442,
+      "status": 200,
+      "latency_ms": 1.744699984556064
+    },
+    {
+      "elapsed_ms": 9453.971700015245,
+      "status": 200,
+      "latency_ms": 3.115700004855171
+    },
+    {
+      "elapsed_ms": 10509.273300005589,
+      "status": 200,
+      "latency_ms": 1.6102000081446022
+    },
+    {
+      "elapsed_ms": 11557.01429999317,
+      "status": 200,
+      "latency_ms": 12.158300000010058
+    },
+    {
+      "elapsed_ms": 12615.332199988188,
+      "status": 200,
+      "latency_ms": 1.6824000049382448
+    },
+    {
+      "elapsed_ms": 13674.914500006707,
+      "status": 200,
+      "latency_ms": 3.088099998421967
+    },
+    {
+      "elapsed_ms": 14732.724800007418,
+      "status": 200,
+      "latency_ms": 1.8555000133346766
+    },
+    {
+      "elapsed_ms": 15794.630799995502,
+      "status": 200,
+      "latency_ms": 1.4887999859638512
+    },
+    {
+      "elapsed_ms": 16855.18780001439,
+      "status": 200,
+      "latency_ms": 1.4845999830868095
+    }
+  ]
+}

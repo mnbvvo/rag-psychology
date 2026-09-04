@@ -1,0 +1,5 @@
+  HTTP 200 code='': 20 个
+  HTTP 503 code='AI_QUEUE_TIMEOUT': 1 个
+总耗时 36s；503 样本等待时长: [30.1]（应≈30s，单一终态）
+结束后 active=0 queued=0
+Q-03/Q-04 原版结论: PASS

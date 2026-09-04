@@ -1,0 +1,3 @@
+G-06 状态分布: {(200, ''): 1, (409, 'AI_REQUEST_IN_PROGRESS'): 9}
+结束后 active=0 queued=0
+G-06 结论: PASS

@@ -4,7 +4,7 @@ RAG核心流程
 """
 import asyncio
 import time
-from typing import List, Dict, Optional
+from typing import Callable, List, Dict, Optional
 from langchain_openai import ChatOpenAI
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
@@ -43,8 +43,8 @@ class PsychologyRAG:
             base_url=settings.OPENAI_API_BASE,
             temperature=settings.CHAT_TEMPERATURE,
             max_tokens=4096,
-            timeout=30,       # 上游挂起时及时失败，避免请求永久阻塞
-            max_retries=2,    # 瞬时网络/限流错误自动重试
+            timeout=settings.LLM_TIMEOUT_SECONDS,  # 参数化：须 > 排队超时（settings.validate 强制）
+            max_retries=settings.LLM_MAX_RETRIES,  # 瞬时网络/限流错误自动重试
         )
         # 流式实例：保留 enable_thinking（思考/推理模式开关，仅流式接口支持）
         self.llm_stream = ChatOpenAI(
@@ -53,8 +53,8 @@ class PsychologyRAG:
             base_url=settings.OPENAI_API_BASE,
             temperature=settings.CHAT_TEMPERATURE,
             max_tokens=4096,
-            timeout=30,
-            max_retries=2,
+            timeout=settings.LLM_TIMEOUT_SECONDS,
+            max_retries=settings.LLM_MAX_RETRIES,
             extra_body={"enable_thinking": settings.ENABLE_THINKING},
         )
 
@@ -307,6 +307,7 @@ class PsychologyRAG:
         messages: Optional[List[Dict]] = None,
         user_id: Optional[str] = None,
         low_relevance: Optional[bool] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> Dict:
         """异步生成（非流式路径用）：与 generate 相同语义，但 LLM 调用走原生 async。
 
@@ -314,14 +315,21 @@ class PsychologyRAG:
           不占用事件循环 —— 避免单次缓存未命中的 embedding API 调用卡住所有并发请求；
         - LLM 调用用 llm_stream.astream 逐块收集 —— 秒级生成期间事件循环空闲，
           可同时托管大量 in-flight 请求，不再受 run_in_threadpool 线程闸（≈40）限制。
-        - 返回 {answer, sources}，与 generate 一致；llm 耗时写入 timings。
+        - cancel_check：可选无参回调；每收到一个 chunk 前调用，返回 True 时立即终止
+          收集（async for break → astream 生成器关闭 → 上游连接被真正终止），
+          避免"取消后仍生成完整答案白烧 token"。返回 dict 带 cancelled=True 标记。
+        - 返回 {answer, sources[, cancelled]}，与 generate 一致；llm 耗时写入 timings。
         """
         # 记忆检索等同步调用移出事件循环（线程池内完成）
         prompt_messages = await asyncio.to_thread(
             self._build_messages, question, context, messages, user_id, low_relevance
         )
+        # 首 token 前若已被取消：不发起任何 LLM 调用，直接返回 cancelled
+        if cancel_check is not None and cancel_check():
+            return {"answer": "", "sources": build_sources(context), "cancelled": True}
         t0 = time.perf_counter()
         full: List[str] = []
+        cancelled = False
         async for chunk in self.stream_generate(
             question,
             context,
@@ -330,14 +338,20 @@ class PsychologyRAG:
             low_relevance=low_relevance,
             prompt_messages=prompt_messages,
         ):
+            if cancel_check is not None and cancel_check():
+                cancelled = True
+                break
             full.append(chunk)
         if timings is not None:
             timings["llm"] = (time.perf_counter() - t0) * 1000
 
-        return {
+        result: Dict = {
             "answer": "".join(full),
             "sources": build_sources(context),
         }
+        if cancelled:
+            result["cancelled"] = True
+        return result
 
 
     def run(

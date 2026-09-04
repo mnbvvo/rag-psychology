@@ -1,0 +1,12 @@
+R-06 断开后 0.3s 快照: active=1（期望 ≥1，未提前释放=无超卖）
+R-06 最终快照 active=0 queued=0
+R-06 结论: PASS
+R-02: HTTP 500 耗时 1.2s（期望 500 且 <15s，SDK 对 5xx 有限重试）
+R-02 结束快照 active=0 queued=0
+R-02 结论: PASS
+R-03: HTTP 500 耗时 2.0s（期望 500/异常 且 3~15s 内结束=有限重试）
+R-03 结束快照 active=0 queued=0
+R-03 结论: PASS
+R-04a: HTTP 200 耗时 5.6s answer_len=104（期望 200+有效回答=embedding 故障降级）
+R-04a 结束快照 active=0 queued=0
+R-04a 结论: PASS

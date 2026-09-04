@@ -36,7 +36,7 @@ Copy-Item .env.example .env
 python scripts/import_cards.py "你的知识库.jsonl" --reset
 
 # 4. 启动（本机 8000 若被占用，用 8001）
-python -m uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
+python -m uvicorn api.main:app --host 127.0.0.1 --port 8001 --reload
 ```
 
 - 接口 / 前端：`http://127.0.0.1:8000`（先注册/登录）

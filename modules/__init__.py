@@ -228,6 +228,7 @@ class PsychologyRAGSystem:
         messages: Optional[List[Dict]] = None,
         user_id: Optional[str] = None,
         rag_enabled: Optional[bool] = None,
+        cancel_check=None,
     ) -> Dict:
         """查询系统（异步完整流程，非流式 /api/query 使用）：与 query 语义一致。
 
@@ -258,9 +259,14 @@ class PsychologyRAGSystem:
             timings=timings, messages=prep.get("norm_messages"),
             user_id=user_id,
             low_relevance=(bool(prep.get("rag_enabled")) and not prep.get("context")),
+            cancel_check=cancel_check,
         )
         prep["answer"] = gen["answer"]
         prep["sources"] = gen["sources"]
+        if gen.get("cancelled"):
+            # 生成被取消：跳过回答侧复查与收尾计时，立即返回（路由层按取消契约处理）
+            prep["cancelled"] = True
+            return prep
         # 回答侧安全复查：LLM 输出命中高危关键词时追加安全提醒（纯 L0 关键词，CPU 级）
         if check_safety:
             answer, ans_check = self.safety_checker.review_answer(gen["answer"])

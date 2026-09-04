@@ -21,11 +21,15 @@ _Task = Tuple[Callable, tuple, dict]
 class BackgroundQueue:
     """进程内 FIFO 后台任务队列（线程池执行同步任务）。"""
 
-    def __init__(self, num_workers: int = 1, maxsize: int = 512):
+    def __init__(self, num_workers: int = 1, maxsize: int = 512, shutdown_timeout: float = 15.0):
         self.num_workers = max(1, num_workers)
+        self.shutdown_timeout = max(1.0, shutdown_timeout)  # 优雅关闭时等待队列排空的最长秒数
         self._queue: "asyncio.Queue[_Task]" = asyncio.Queue(maxsize=max(1, maxsize))
         self._tasks: List[asyncio.Task] = []
         self._started = False
+        self._draining = False  # True 后拒绝新任务入队（优雅关闭阶段）
+        self.failed_count = 0  # 已投递任务执行失败的累计数（含重试后仍失败）；供健康检查/监控读取
+        self.completed_count = 0
 
     # ---------------- 生命周期（startup / shutdown） ----------------
     def start(self) -> None:
@@ -35,13 +39,29 @@ class BackgroundQueue:
         loop = asyncio.get_running_loop()
         self._tasks = [loop.create_task(self._worker(i)) for i in range(self.num_workers)]
         self._started = True
+        self._draining = False
         print(f"[bg_queue] 已启动 {self.num_workers} 个后台持久化 Worker", flush=True)
 
     async def shutdown(self) -> None:
-        """优雅停止：取消 Worker 任务（进行中的 to_thread 任务自然结束后被回收）。"""
+        """优雅停止：先拒绝新任务，再等待队列排空（带超时），最后回收 Worker。
+
+        相比直接 cancel：已入队未执行的持久化任务（会话/危机审计）会先被消费完，
+        避免服务关闭时静默丢数据（对应验收方案一票否决项 11）。
+        """
         if not self._started:
             return
         self._started = False
+        self._draining = True
+        try:
+            # 等待队列内所有已入队任务被 Worker 消费并 task_done
+            await asyncio.wait_for(self._queue.join(), timeout=self.shutdown_timeout)
+            print("[bg_queue] 队列已排空，准备停止 Worker", flush=True)
+        except asyncio.TimeoutError:
+            print(
+                f"[bg_queue][WARN] 排空超时（{self.shutdown_timeout}s），"
+                f"剩余未处理任务 {self._queue.qsize()} 个，强制停止",
+                flush=True,
+            )
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -51,7 +71,7 @@ class BackgroundQueue:
     # ---------------- 投递 ----------------
     async def enqueue(self, fn: Callable, *args, **kwargs) -> bool:
         """投递一个同步任务。返回 False 表示未入队（调用方应回退同步执行）。"""
-        if not self._started:
+        if not self._started or self._draining:
             return False
         try:
             self._queue.put_nowait((fn, args, kwargs))
@@ -61,6 +81,11 @@ class BackgroundQueue:
             print(f"[bg_queue][WARN] 队列已满（{self._queue.qsize()}），回退同步落库: {getattr(fn, '__name__', fn)}", flush=True)
             return False
 
+    # ---------------- 查询 ----------------
+    def queue_depth(self) -> int:
+        """当前队列中待处理任务数（供健康检查/监控）。"""
+        return self._queue.qsize()
+
     # ---------------- Worker ----------------
     async def _worker(self, idx: int) -> None:
         tid = threading.get_ident() % 100000
@@ -69,11 +94,18 @@ class BackgroundQueue:
             try:
                 # 同步落库放到线程池，独立 DB Session（任务函数内自行开 Session）
                 await asyncio.to_thread(fn, *args, **kwargs)
+                self.completed_count += 1
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                # 任务自身应已捕获；这里兜底，避免单任务异常拖垮 worker 循环
-                print(f"[bg_queue][ERROR] worker[{tid}] 任务失败: {type(e).__name__}: {e}", flush=True)
+                # 任务自身应已捕获；这里兜底计数，避免单任务异常拖垮 worker 循环，
+                # 并保证失败对监控可见（方案 §8：失败必须有指标，不能静默）。
+                self.failed_count += 1
+                print(
+                    f"[bg_queue][ERROR] worker[{tid}] 任务失败(已计数，累计 {self.failed_count}): "
+                    f"{type(e).__name__}: {e}",
+                    flush=True,
+                )
             finally:
                 self._queue.task_done()
 

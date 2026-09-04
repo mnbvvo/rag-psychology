@@ -3,6 +3,12 @@ FastAPI服务接口
 提供RESTful API供前端调用
 """
 import sys
+import os
+import re
+import atexit
+import socket
+import subprocess
+import tempfile
 from pathlib import Path
 
 # 确保无论从哪个工作目录启动（如 `python api/main.py`），
@@ -65,6 +71,12 @@ app.add_middleware(
 
 # 简单内存限流：仅针对 POST /api/query 与 /api/query/stream，防止单客户端刷接口
 _rate_limit_store: dict[str, deque] = defaultdict(deque)
+_rate_limit_last_sweep = 0.0  # 上次空桶清扫时间（限流桶键回收用）
+
+# 后台持久化可靠性指标（/api/health 暴露；落库失败必须对监控可见，见验收方案 §8）
+_persist_total = 0                 # 已投递的持久化任务数（含同步回退执行）
+_persist_failures = 0              # 会话落库最终失败累计（重试后仍失败）
+_persist_critical_failures = 0     # 危机审计/高危落库最终失败累计（最敏感数据，单独计数）
 
 
 # ---------------- 越权预校验（在调用 LLM 之前快速失败） ----------------
@@ -103,8 +115,15 @@ def _persist_payload_sync(
     - 由 modules/bg_queue 的 Worker 经 asyncio.to_thread 执行，每个任务独立 DB Session；
     - 失败不影响回答本身，只打告警。
     """
+    global _persist_total, _persist_failures, _persist_critical_failures
     current_question = (question or "").strip()
-    try:
+    # 高危/危机审计属于关键数据：若本函数被请求内同步执行（见 _enqueue_persist），
+    # 其失败必须在计数上单独体现，不允许与普通会话混在一起被"尽力而为"掩盖。
+    critical = bool(is_crisis_response) or bool(
+        safety_check and safety_check.get("is_crisis")
+    ) or bool(answer_safety_check and answer_safety_check.get("is_crisis"))
+
+    def _flush_once() -> None:
         with crud.get_db() as db:
             crud.append_turn(
                 db,
@@ -143,8 +162,31 @@ def _persist_payload_sync(
                     detect_method="answer_check",
                     user_id=user_id,
                 )
+
+    _persist_total += 1
+    try:
+        _flush_once()
     except Exception as e:
-        print(f"[persist][WARN] 会话持久化失败（回答已正常返回）: {e}", flush=True)
+        # 瞬时故障（连接抖动/锁等待/网络闪断）重试一次，降低偶发静默丢失
+        time.sleep(0.3)
+        try:
+            _flush_once()
+            print(f"[persist][WARN] 首次落库失败后重试成功: {type(e).__name__}", flush=True)
+        except Exception as e2:
+            _persist_failures += 1
+            if critical:
+                _persist_critical_failures += 1
+                print(
+                    f"[persist][CRITICAL] 危机审计/高危落库最终失败（累计 {_persist_critical_failures}）: "
+                    f"{type(e2).__name__}: {e2}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"[persist][ERROR] 会话持久化最终失败（累计 {_persist_failures}，回答已正常返回）: "
+                    f"{type(e2).__name__}: {e2}",
+                    flush=True,
+                )
 
     # 长期记忆落库（向量检索式）：本轮问答 + embedding 写入 user_chat_history
     if settings.MEMORY_ENABLED and current_question:
@@ -167,13 +209,25 @@ async def _enqueue_persist(
     safety_note: Optional[str] = None,
     answer_safety_check: Optional[dict] = None,
 ) -> None:
-    """投递持久化任务到后台队列；队列未启动/已满时回退请求内同步执行（可靠性兜底）。"""
+    """投递持久化任务到后台队列；队列未启动/已满时回退请求内同步执行（可靠性兜底）。
+
+    高危/危机审计属于关键数据（验收方案 §8：不得仅依靠内存队列"尽力而为"保存），
+    一律**请求内同步写入**，不进入进程内内存队列——即使进程随后崩溃/关闭，
+    危机审计也已落库，不会被内存队列丢弃。
+    """
     from modules.bg_queue import bg_queue
 
     payload = (
         session_id, question, answer, title, user_id,
         safety_check, is_crisis_response, safety_note, answer_safety_check,
     )
+    critical = bool(is_crisis_response) or bool(
+        safety_check and safety_check.get("is_crisis")
+    ) or bool(answer_safety_check and answer_safety_check.get("is_crisis"))
+    if critical:
+        # 关键数据：同步直写（高危低频，毫秒级 DB insert，请求内可接受）
+        await run_in_threadpool(_persist_payload_sync, *payload)
+        return
     ok = await bg_queue.enqueue(_persist_payload_sync, *payload)
     if not ok:
         # 回退：请求内线程池执行（与旧行为一致）
@@ -208,6 +262,81 @@ def _sse_queue_event(request_id: str, position: int, queued: int, active: int) -
     })
 
 
+# ---------------- Phase 1 memory 准入后端：单实例守卫（验收方案 G-08 / 一票否决项 8） ----------------
+def _pid_alive(pid: int) -> bool:
+    """探测 PID 是否存活。POSIX 用 kill(pid, 0)；Windows 用 tasklist（os.kill 在
+    Windows 对非 CTRL 信号会 TerminateProcess，不能用于探测）。"""
+    try:
+        if os.name == "nt":
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            return str(pid) in out
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def _release_single_instance_lock(lock_path: Path, pid: int) -> None:
+    """atexit 释放单实例锁：仅当锁仍由本进程持有才删除，避免误删后来者。"""
+    try:
+        if lock_path.exists():
+            cur = lock_path.read_text(encoding="utf-8").strip().split()
+            if cur and int(cur[0]) == pid:
+                lock_path.unlink()
+    except Exception:
+        pass
+
+
+def _acquire_single_instance_lock() -> None:
+    """memory 准入后端只允许一个 app 实例承载 20 active + 40 queue。
+
+    关键事实：uvicorn 的 `--workers` 不会设置任何环境变量，且与 `--reload` 的
+    socket 拓扑完全相同（master 预绑定后子进程共享），因此无法靠环境变量或端口
+    探测区分；但 `--reload`/直跑都只有一个 app 实例，`--workers N` 有 N 个。
+    所以守卫维度 = **app 实例级原子锁**：每个进程在 startup 时用 O_EXCL 原子
+    创建锁文件，第二个实例创建失败且持有者存活 → 拒绝启动（uvicorn 多 worker
+    的第二个 worker 启动失败退出，最终只剩一个 20 槽位实例，满足 G-08b）。
+    """
+    if (settings.AI_ADMISSION_BACKEND or "memory").strip().lower() != "memory":
+        return  # redis（Phase 2 多实例）才允许多进程；memory 必须单实例
+    lock_path = Path(tempfile.gettempdir()) / f"rag_psychology_memory_{settings.PORT}.lock"
+
+    for attempt in (0, 1):  # 第二轮仅用于：stale 锁（持有者已死）清理后重试
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(f"{os.getpid()} {time.time()}\n")
+            atexit.register(_release_single_instance_lock, lock_path, os.getpid())
+            return
+        except FileExistsError:
+            holder_pid = None
+            try:
+                holder_pid = int(lock_path.read_text(encoding="utf-8").strip().split()[0])
+            except Exception:
+                pass
+            if holder_pid is not None and _pid_alive(holder_pid):
+                raise RuntimeError(
+                    f"检测到已有 rag-psychology 实例在运行（PID {holder_pid}，锁 {lock_path}）。"
+                    "Phase 1 memory 准入后端只允许单实例/单 worker 承载 20 active + 40 queue，"
+                    "请勿使用 uvicorn --workers 或重复启动；多实例需 Phase 2 redis 后端。"
+                )
+            # 持有者已退出（如 kill -9 残留）：清掉 stale 锁后进入下一轮重试
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
+        except OSError as e:
+            print(f"[warn] 单实例锁不可用（继续启动）: {e}", flush=True)
+            return
+    raise RuntimeError(
+        f"无法获取单实例锁（{lock_path}），疑似存在并发启动的实例。"
+        "Phase 1 memory 准入后端只允许单实例/单 worker。"
+    )
+
+
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
     if request.url.path in ("/api/query", "/api/query/stream") and request.method == "POST":
@@ -225,6 +354,13 @@ async def rate_limit_middleware(request: Request, call_next):
                 content={"detail": "请求过于频繁，请稍后再试。"},
             )
         bucket.append(now)
+        # 桶键回收：defaultdict 的键只 prune 不删除，公网暴露后键数会随来源 IP 无限
+        # 增长（每个 IP 残留一个空 deque）→ 每 10 分钟清扫一次空桶，防止内存缓慢泄漏
+        global _rate_limit_last_sweep
+        if len(_rate_limit_store) > 1000 and now - _rate_limit_last_sweep > 600:
+            _rate_limit_last_sweep = now
+            for key in [k for k, v in _rate_limit_store.items() if not v]:
+                del _rate_limit_store[key]
     return await call_next(request)
 
 
@@ -368,7 +504,14 @@ async def query(
             check_safety=request.safety_enabled,
             user_id=user_id,
             rag_enabled=request.rag_enabled,
+            # 同步接口取消语义：生成过程中逐 chunk 检查取消标记，命中即终止上游生成，
+            # 不再白烧 token（验收方案 §2.2：不能只设置 cancelling 标志后仍生成完整答案）
+            cancel_check=lambda: admission.is_cancelling(request_id),
         )
+        if result.get("cancelled"):
+            # 已被用户取消：不返回半截答案，按取消契约给 409（finally 以 cancelled 释放槽位）
+            terminal = TerminalReason.CANCELLED.value
+            return _admission_json(409, "请求已取消", AI_REQUEST_CANCELLED)
 
         # —— 持久化到关系库（会话 + 危机审计，归属当前用户） ——
         # 仅对话联调页（persist=true）需要落库。落库已后台化（Queue→Worker→DB，
@@ -469,7 +612,9 @@ async def query_stream(
                 queued_disconnected = False
                 while not outcome_fut.done():
                     try:
-                        await asyncio.wait_for(asyncio.shield(outcome_fut), timeout=1.0)
+                        # 0.5s 粒度轮询断连/取消：排队中客户端断开应在 ~0.5s 内被移除
+                        # （验收方案 R-10 要求 1s 内；1.0s 轮询贴线，收紧到 0.5s）
+                        await asyncio.wait_for(asyncio.shield(outcome_fut), timeout=0.5)
                     except asyncio.TimeoutError:
                         # 客户端在排队中断开 → 尽力取消排队
                         if await stream_request.is_disconnected():
@@ -660,6 +805,14 @@ async def query_stream(
         finally:
             # 工作真实退出后才释放活跃槽位（幂等；断连/取消/异常均覆盖）
             await admission.release(ticket, terminal=terminal)
+            # 兜底防泄漏（R-10 实测暴露）：排队阶段因客户端断连/异常提前退出时，
+            # 条目仍在 _queue（release 对 queued 条目返回 NOT_RUNNING、无清理效果），
+            # 会被后续 _promote 提升为“无消费者协程”的 running 请求 → 槽位永久泄漏。
+            # 此处幂等补 cancel：已在活跃/已终态/已释放时返回 CANCELLING/ALREADY_FINISHED，无副作用。
+            try:
+                await admission.cancel(user_id, request_id)
+            except Exception as _e:  # noqa: BLE001 - 清理兜底失败仅告警，不影响主流程
+                print(f"[query/stream][WARN] 排队残留清理失败: {type(_e).__name__}: {_e}", flush=True)
 
     return StreamingResponse(
         event_stream(),
@@ -710,11 +863,20 @@ async def concurrency_status():
 @app.get("/api/health")
 async def health_check():
     """
-    健康检查接口
+    健康检查接口：同时暴露后台持久化可靠性指标（落库失败必须可观测，验收方案 §8）。
     """
+    from modules.bg_queue import bg_queue
+
     return {
         "status": "healthy",
         "version": "1.0.0",
+        "persist": {
+            "queue_depth": bg_queue.queue_depth(),
+            "total": _persist_total,
+            "completed": bg_queue.completed_count,
+            "failures": _persist_failures,
+            "critical_failures": _persist_critical_failures,
+        },
     }
 
 
@@ -861,6 +1023,8 @@ async def admin_list_crisis_audits(
 async def startup_event():
     """启动时验证配置、建表、引导账号"""
     settings.validate()
+    # Phase 1 memory 准入：单实例守卫（阻断 uvicorn --workers / 重复启动的第二个实例）
+    _acquire_single_instance_lock()
     init_db()
     # 历史遗留的占位标题会话（“新的对话”等）按最早一条用户消息自动命名（幂等）
     try:
@@ -912,7 +1076,8 @@ async def startup_event():
     print("青少年心理RAG系统已启动")
     print(f"模型: {settings.CHAT_MODEL}")
     print(f"向量数据库: {settings.VECTOR_BACKEND}")
-    print(f"关系数据库: {settings.DB_URL}")
+    # 脱敏打印：DB URL 含密码，不得直接写入终端/日志（统一日志聚合时会泄露）
+    print(f"关系数据库: {re.sub(r'(://[^:/]+:)[^@/]+(@)', lambda m: m.group(1) + '******' + m.group(2), settings.DB_URL)}")
     print(f"RAG 检索: {'启用' if settings.RAG_ENABLED else '禁用（纯对话模式，不加载重排/BM25）'}")
     print(f"安全检查: {'启用' if settings.SAFETY_ENABLED else '禁用（不加载语义锚点）'}")
     print(f"本地重排: {'启用（' + settings.RERANK_MODEL + '）' if settings.RERANK_ENABLED and settings.RAG_ENABLED else '未启用'}")

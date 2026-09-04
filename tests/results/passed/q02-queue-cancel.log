@@ -1,0 +1,4 @@
+done 总数: 36（期望 36 = 20 直跑 + 16 剩余排队）
+幽灵运行(被取消却 started): 0（期望 0）；剩余 FIFO=True
+结束后 active=0 queued=0
+Q-02 结论: PASS

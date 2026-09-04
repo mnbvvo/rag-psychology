@@ -1,0 +1,13 @@
+=== G-08a: WEB_CONCURRENCY=2 直跑（期望拒绝启动）===
+    raise ValueError(
+ValueError: AI_ADMISSION_BACKEND=memory（Phase 1）只允许单 worker，检测到 WEB_CONCURRENCY=2。多 worker 需 Phase 2 的 redis 后端。
+ERROR:    Application startup failed. Exiting.
+
+=== G-08b: uvicorn --workers 2（期望第二个 worker 被单实例锁拦截）===
+INFO:     Uvicorn running on http://127.0.0.1:8003 (Press CTRL+C to quit)
+INFO:     Started server process [16556]
+INFO:     Started server process [31180]
+RuntimeError: 检测到已有 rag-psychology 实例在运行（PID 23108，锁 C:\Users\THUNDE~1\AppData\Local\Temp\rag_psychology_memory_8000.lock）。Phase 1 memory 准入后端只允许单实例/单 worker 承载 20 active + 40 queue，请勿使用 uvicorn --workers 或重复启动；多实例需 Phase 2 redis 后端。
+ERROR:    Application startup failed. Exiting.
+RuntimeError: 检测到已有 rag-psychology 实例在运行（PID 23108，锁 C:\Users\THUNDE~1\AppData\Local\Temp\rag_psychology_memory_8000.lock）。Phase 1 memory 准入后端只允许单实例/单 worker 承载 20 active + 40 queue，请勿使用 uvicorn --workers 或重复启动；多实例需 Phase 2 redis 后端。
+ERROR:    Application startup failed. Exiting.

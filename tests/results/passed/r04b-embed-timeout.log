@@ -1,0 +1,3 @@
+R-04b: HTTP 200 耗时 97.0s（期望 200，~90s=3×30s embedding 超时后降级）
+R-04b 结束快照 active=0 queued=0 persist_queue=0
+R-04b 结论: PASS
