@@ -2,7 +2,7 @@
 
 面向青少年及家庭心理知识问答的本地检索增强生成（RAG）系统。知识以结构化「卡片」形式入库，检索后由大模型基于卡片生成回答，内置**分级危机干预检测**（关键词硬门控 + 语义锚点 + 回答侧复查）、**长期记忆**（向量检索式）与 **JWT 多租户数据隔离**。
 
-技术栈：FastAPI + LangChain + PostgreSQL（关系库 + pgvector 向量库，生产默认）/ SQLite + Chroma（本地回退）+ OpenAI 兼容接口（默认 DashScope / 通义千问兼容模式）。
+技术栈：FastAPI + LangChain + PostgreSQL 16（关系库 + pgvector 向量库，统一单一后端）+ OpenAI 兼容接口（默认 DashScope / 通义千问兼容模式）。
 
 ---
 
@@ -36,7 +36,7 @@ Copy-Item .env.example .env
 python scripts/import_cards.py "你的知识库.jsonl" --reset
 
 # 4. 启动（本机 8000 若被占用，用 8001）
-python -m uvicorn api.main:app --host 127.0.0.1 --port 8001 --reload
+python -m uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 - 接口 / 前端：`http://127.0.0.1:8000`（先注册/登录）
@@ -51,13 +51,18 @@ python -m uvicorn api.main:app --host 127.0.0.1 --port 8001 --reload
 
 **配置分层原则**：`.env` 只放「密钥 + 随部署环境变化的值」；检索 / 生成 / 安全 / 服务等调参都是 `config/settings.py` 里的静态常量（含中文注释），不填也能跑。
 
-`.env` 通常只要三行：
+`.env` 通常只要这几行：
 
 ```dotenv
 OPENAI_API_KEY=你的API密钥
 OPENAI_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1  # OpenAI 兼容接口
 CHAT_MODEL=deepseek-v4-flash-0731       # 对话模型
+DB_BACKEND=postgres                     # 关系库
+PG_PASSWORD=你的数据库密码              # 本机 PostgreSQL 密码
+JWT_SECRET=你的强随机密钥               # ≥32 字节，见下方说明
 ```
+
+> 数据库必填：本系统使用 **PostgreSQL**（关系库 + pgvector 向量库同库，默认库名 `rag_psychology`）。`PG_HOST/PG_PORT/PG_USER/PG_DB` 按需覆盖；`VECTOR_BACKEND` 固定 `pgvector`。缺 `JWT_SECRET` 或强度不足（<32 字节）时服务**拒绝启动**（fail-closed）。
 
 关键静态开关（`config/settings.py`，改后重启）：
 
@@ -92,7 +97,7 @@ api/
 modules/
   __init__.py    rag_system 编排：prepare（安全+检索）/ query（完整同步链路）
   rag_core.py    LLM 封装、消息组装、generate / stream_generate
-  vector_store.py  pgvector / Chroma 双后端向量检索、embedding 缓存计时
+  vector_store.py  pgvector 向量检索、embedding 缓存计时
   safety_checker.py L0 关键词 + L1 语义 + 回答侧复查
   crisis_detector.py L1 高危意图锚点距离检测
   hybrid_search.py BM25 关键词召回（jieba 分词）
@@ -101,19 +106,18 @@ modules/
   prompt_store.py 系统提示词常量 ACTIVE_PROMPT + 组装 system prompt
   security.py    bcrypt 密码哈希封装
 db/
-  models.py      6 张业务表 ORM
+  models.py      5 张业务表 ORM
   crud.py        各表读写（get_db 上下文管理器）
+  crud_async.py  异步读写（AsyncSession，请求级）
   __init__.py    引擎 / init_db 幂等建表 / legacy+admin 引导
 config/          settings.py 调参；crisis_keywords.json（L0 关键词）；high_risk_intents.json（L1 种子）
 frontend/        纯静态单页（对话联调，FastAPI 托管，无需构建）
 scripts/
   import_cards.py                 知识卡片 JSONL 导入
-  test_auth.py                    29 项鉴权/越权/隔离测试
-  concurrency_test.py             并发压测（同步 + SSE）
+  concurrency_pressure_test.py    并发压测（boundary / steady / spike 三模式）
   backup_pg.py                    PostgreSQL 全量备份
   calibrate_crisis_thresholds.py  L1 阈值标定
   diagnose_retrieval.py           检索质量诊断
-  migrate_to_postgres.py          一次性迁移（SQLite+Chroma → PG+pgvector，已完成使命，留档）
 data/            运行时数据（.gitignore 忽略）：crisis_prototypes.json（L1 锚点缓存）等
 requirements.txt Python 依赖
 ```
@@ -215,11 +219,10 @@ JSONL 每行一条记录（`card_json` 结构化字段 + 审核字段，见项�
 
 ## 检索与生成链路
 
-### 向量库（pgvector 默认 / Chroma 回退）
+### 向量库（PostgreSQL + pgvector）
 
 - 向量由 `EMBEDDING_MODEL` 生成，文档来自 JSONL 结构化卡片（一卡一文档）；
-- **pgvector（生产默认）**：存 PostgreSQL 的 `langchain_pg_embedding` 表，余弦相似度检索；
-- **Chroma（本地原型）**：`VECTOR_BACKEND=chroma` 切换，持久化在 `data/chroma/`；
+- **pgvector**：向量存 PostgreSQL 的 `langchain_pg_embedding` 表（与关系库同库），余弦相似度检索；
 - 重建：先 `--reset` 再重新导入。
 
 > ⚠️ 向量与 `EMBEDDING_MODEL` 绑定：更换 embedding 模型后旧向量**静默失效**（不报错但检索质量崩坏），必须 `--reset` 重新导入。
@@ -276,8 +279,8 @@ embedding 复用检索阶段那次 API 调用（进程内 LRU 缓存），**不�
 
 ### 两层持久化（分工明确）
 
-- **向量库**：只负责语义检索（pgvector / Chroma）；
-- **关系库**：只负责结构化留痕——用户 / 会话 / 消息 / 危机审计 / 长期记忆（SQLAlchemy 抽象，切换后端业务代码无需改动）。系统提示词**不存数据库**，见「系统提示词」章节。
+- **向量库**：只负责语义检索（pgvector，与关系库同库）；
+- **关系库**：只负责结构化留痕——用户 / 会话 / 消息 / 危机审计 / 长期记忆（SQLAlchemy ORM，统一走 PostgreSQL）。系统提示词**不存数据库**，见「系统提示词」章节。
 
 ### 表结构（业务表 5 张）
 
@@ -291,7 +294,7 @@ embedding 复用检索阶段那次 API 调用（进程内 LRU 缓存），**不�
 
 > 约定：库内 `Message.role` 只存 `human`/`ai`；前端显示用 `user`/`assistant`，映射在加载/导入边界处理。`QueryRequest.messages[].role` 兼容四种取值，最后一条须为用户问题。`crisis_audit.keywords_found` 在库中为 JSON 编码字符串。
 
-### 常用运维（PostgreSQL 为主）
+### 常用运维（PostgreSQL）
 
 ```powershell
 # 查看各表行数
@@ -305,28 +308,26 @@ python scripts/backup_pg.py
 psql -U postgres -d rag_psychology -c "TRUNCATE users, sessions, messages, crisis_audit, user_chat_history, langchain_pg_embedding, langchain_pg_collection RESTART IDENTITY CASCADE;"
 ```
 
-> 切换 embedding 模型不影响关系库（只与向量库绑定）。SQLite 回退：`.env` 设 `DB_BACKEND=sqlite` + `VECTOR_BACKEND=chroma`，旧库文件在 `data/` 下。
+> 切换 embedding 模型不影响关系库（只与向量库绑定），更换后旧向量静默失效，需 `--reset` 重新导入。
 
 ---
 
 ## 测试与压测
 
-**鉴权 / 越权 / 数据隔离**（TestClient 直测，无需起服务，自动关闭重排/语义预热）：
+**并发压测**（`scripts/concurrency_pressure_test.py`，boundary / steady / spike 三模式，真实调 LLM 注意 API quota）：
 
 ```powershell
-python scripts/test_auth.py   # 29 项断言：401/403/409/429、水平/垂直越权、数据隔离、登录锁定
+# 边界：单轮 N 个请求验证 20 活跃 + 40 排队准入（61 → 恰 1 个 AI_QUEUE_FULL）
+python scripts/concurrency_pressure_test.py boundary --level 61
+
+# 稳态：固定并发持续施压（如 20 并发 600 秒）
+python scripts/concurrency_pressure_test.py steady --concurrency 20 --duration 600
+
+# 尖峰：多轮同步突发（每轮 level 个请求，验证每轮拒绝数）
+python scripts/concurrency_pressure_test.py spike --level 80 --rounds 10
 ```
 
-> 若库里 admin 密码被改过（非 `INIT_ADMIN_PASSWORD` 默认值），需前置环境变量：`INIT_ADMIN_PASSWORD=<实际密码> python scripts/test_auth.py`
-
-**并发压测**（真实调 LLM，注意 API quota）：
-
-```powershell
-# 200 请求、常驻并发 20，走同步 /api/query
-python scripts/concurrency_test.py --total 200 --concurrency 20
-# 只压检索+生成不落库（隔离 DB 写压力）
-python scripts/concurrency_test.py --total 200 --concurrency 20 --no-persist
-```
+压测命令会按目标并发数自动注册独立测试账号（`--user-prefix` / `--password`），并按 `--endpoint query|stream|mixed` 与 `--persist/--no-persist` 区分链路。运行结束输出 JSON 报告与 PASS/FAIL 判定（`--output` 指定路径）。鉴权 / 越权 / 数据隔离由 `api/deps.py` 的 JWT/RBAC 依赖 + `db/crud_async.py` 的归属校验在代码层保证（见「接口」章节）。
 
 **检索质量诊断**：`python scripts/diagnose_retrieval.py`——把知识库全量文档直接交给重排器打分，定位"检索相似度低"的根源（重排模型异常 vs 知识库缺内容）。
 
