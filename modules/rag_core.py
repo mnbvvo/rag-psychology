@@ -218,8 +218,24 @@ class PsychologyRAG:
         prompt_messages = [("system", system_prompt)]
         if settings.MEMORY_RECENT_ROUNDS > 0 and messages:
             # messages 的最后一条是当前问题（_normalize 保证），跳过它取历史；
-            # 1 轮 = 一问一答 2 条消息，取最近 N 轮
+            # 1 轮 = 一问一答 2 条消息，先按轮数上限（MEMORY_RECENT_ROUNDS*2）
+            # 截出候选，再按字符预算（MEMORY_RECENT_MAX_CHARS）从最新向旧累计，
+            # 超预算即停——双约束先到先停，至少保底最近 1 条完整消息（不截断
+            # 单条内部）。预算只统计窗口内原文，system/RAG/长期记忆另计。
             history = messages[:-1][-settings.MEMORY_RECENT_ROUNDS * 2:]
+            budget = settings.MEMORY_RECENT_MAX_CHARS
+            if budget > 0 and len(history) > 1:
+                used = 0
+                kept: list = []
+                for m in reversed(history):
+                    content = (m.get("content") or "").strip()
+                    if not content:
+                        continue
+                    used += len(content)
+                    if used > budget and kept:
+                        break  # 超预算即停；kept 为空时保底放行最近 1 条
+                    kept.append(m)
+                history = list(reversed(kept))
             for m in history:
                 role = (m.get("role") or "").lower()
                 content = (m.get("content") or "").strip()

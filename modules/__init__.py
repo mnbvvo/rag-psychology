@@ -83,6 +83,7 @@ class PsychologyRAGSystem:
         messages: Optional[List[Dict]] = None,
         user_id: Optional[str] = None,
         rag_enabled: Optional[bool] = None,
+        session_id: Optional[str] = None,
     ) -> Dict:
         """安全检测 + 检索（不含生成）。
 
@@ -94,10 +95,31 @@ class PsychologyRAGSystem:
         check_safety：None 用 settings.SAFETY_ENABLED；False 时跳过整条安全链路
         （L0 关键词 + L1 语义 + 回答侧复查），不调 embedding。
         user_id：当前用户（提示词全局激活项解析，透传至生成阶段）。
+        session_id：会话 id。当请求为「单轮 question 模式（messages 为空）」时，
+        由服务端从 messages 表按会话读取最近 MEMORY_RECENT_ROUNDS 轮原文作为
+        短期窗口注入（前端只发本轮问题）；messages 非空（旧前端 / 对比页
+        persist=false）时不查库、保持兼容回退。安全检测对注入历史的 human
+        轮次同样生效（比前端只回传窗口时上下文更完整）。
         """
         rag_enabled = settings.RAG_ENABLED if rag_enabled is None else bool(rag_enabled)
         check_safety = settings.SAFETY_ENABLED if check_safety is None else bool(check_safety)
         norm_messages, current_question = self._normalize(messages, question)
+        # 服务端短期窗口（2026-09-04）：新前端只发 question+session_id，会话最近
+        # N 轮原文由 DB messages 表按会话注入（替代「前端全量回传 + 服务端截断」），
+        # 会话隔离正确、跨设备一致。仅当请求未带 messages（旧前端/对比页仍回传，
+        # 保持兼容）且会话已有消息时生效；读取失败回退单轮，不影响主流程。
+        if messages is None and session_id and settings.MEMORY_RECENT_ROUNDS > 0:
+            try:
+                from db.crud import get_db, load_session_recent
+
+                with get_db() as db:
+                    recent = load_session_recent(
+                        db, session_id, limit=settings.MEMORY_RECENT_ROUNDS * 2
+                    )
+                if recent:
+                    norm_messages = recent + norm_messages  # 末尾保留当前问题
+            except Exception as e:
+                print(f"[window][WARN] 会话历史读取失败，本次仅带当前问题: {e}", flush=True)
         result = {
             "question": current_question,
             "context": [],
@@ -180,6 +202,7 @@ class PsychologyRAGSystem:
         messages: Optional[List[Dict]] = None,
         user_id: Optional[str] = None,
         rag_enabled: Optional[bool] = None,
+        session_id: Optional[str] = None,
     ) -> Dict:
         """查询系统（同步完整流程：prepare + generate）。
 
@@ -188,11 +211,15 @@ class PsychologyRAGSystem:
         rag_enabled：None 用 settings.RAG_ENABLED；False 跳过检索纯对话。
         check_safety：None 用 settings.SAFETY_ENABLED；False 跳过整条安全链路。
         user_id：当前用户（提示词全局激活项解析 + 持久化归属）。
+        session_id：question 单轮模式下的会话 id，服务端据此从 DB 注入短期窗口。
         """
         # 全流程墙钟：从 prepare（安全+检索+重排）到生成结束，与 SSE 端点 total 语义一致
         t_query = time.perf_counter()
         check_safety = settings.SAFETY_ENABLED if check_safety is None else bool(check_safety)
-        prep = self.prepare(question, check_safety, messages, user_id, rag_enabled=rag_enabled)
+        prep = self.prepare(
+            question, check_safety, messages, user_id,
+            rag_enabled=rag_enabled, session_id=session_id,
+        )
         timings = prep.get("timings") or {}
 
         # 高危：直接返回危机响应（prepare 内已记录全程 total）
@@ -228,6 +255,7 @@ class PsychologyRAGSystem:
         messages: Optional[List[Dict]] = None,
         user_id: Optional[str] = None,
         rag_enabled: Optional[bool] = None,
+        session_id: Optional[str] = None,
         cancel_check=None,
     ) -> Dict:
         """查询系统（异步完整流程，非流式 /api/query 使用）：与 query 语义一致。
@@ -244,7 +272,9 @@ class PsychologyRAGSystem:
         check_safety = settings.SAFETY_ENABLED if check_safety is None else bool(check_safety)
         # prepare 内是同步 embedding/检索/重排调用，移出事件循环（仅占用线程很短时间）
         prep = await asyncio.to_thread(
-            self.prepare, question, check_safety, messages, user_id, rag_enabled=rag_enabled
+            self.prepare,
+            question, check_safety, messages, user_id,
+            rag_enabled=rag_enabled, session_id=session_id,
         )
         timings = prep.get("timings") or {}
 

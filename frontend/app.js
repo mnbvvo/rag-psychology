@@ -642,14 +642,10 @@ async function sendChat(content) {
         updateStreamingBubble(placeholder, streamEls);
       };
     }
-    // 多轮记忆：历史 = 除占位外的全部消息（占位尚未有内容，不应发给后端）
-    const history = session.messages
-      .filter((m) => m !== placeholder)
-      // 过滤中断残留的空占位（content="" 的 assistant 消息）与空内容消息，
-      // 避免发给后端触发 422（messages[i].content 不能为空）
-      .filter((m) => typeof m.content === "string" && m.content.trim() !== "")
-      .map((m) => ({ role: m.role, content: m.content }));
-    const body = { messages: history, session_id: session.id };
+    // 多轮记忆（2026-09-04）：短期窗口由服务端按 session_id 从 messages 表组装
+    // （最近 MEMORY_RECENT_ROUNDS 轮，见 prepare/_build_messages），前端只发本轮
+    // 问题 —— 请求体 O(1)，会话隔离与跨设备/刷新一致性由服务端保证。
+    const body = { question: content, session_id: session.id };
     if (isFirstTurn) body.title = session.name;
 
     const resp = await apiFetch("/api/query/stream", {

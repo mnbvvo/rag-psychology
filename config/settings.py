@@ -107,6 +107,11 @@ class Settings:
     # 与跨会话向量记忆互补——解决指代消解（"那个方法""刚才说的"向量检索不到，
     # 只能靠最近几轮原文）。0=只走向量记忆通道。
     MEMORY_RECENT_ROUNDS = 6
+    # 短期窗口字符预算（双约束：轮数上限 MEMORY_RECENT_ROUNDS 之外，窗口内历史
+    # 原文合计字符数不超过此值，从最新轮次向前累计，超预算即截断，至少保底 1 轮）。
+    # 中文约 1 字 ≈ 1 token 上下，6000 字符 ≈ 6k~9k token；请按所用模型 context
+    # 与 system/RAG/输出占比调优，别让窗口占满上下文。0=仅按轮数不设预算。
+    MEMORY_RECENT_MAX_CHARS = int(os.getenv("MEMORY_RECENT_MAX_CHARS", "6000"))
 
     # 遗留参数（旧「全量拼接历史」模式使用，已由向量检索式长期记忆取代，保留以兼容引用）
     MAX_HISTORY_TURNS = 5

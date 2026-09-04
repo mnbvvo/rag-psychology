@@ -137,6 +137,27 @@ def _recent_messages(db, session_id: str, n: int = 2) -> list[Message]:
     )
 
 
+def load_session_recent(db, session_id: str, limit: int = 12) -> list[dict]:
+    """按时间顺序返回某会话最近 limit 条消息（role/content，倒序取后反转）。
+
+    供服务端短期窗口组装使用：前端只传 session_id + 本轮问题，历史由本函数
+    从 messages 表按会话原文读取（会话隔离正确，且跨设备/刷新一致）。
+    归属校验由 API 层（_assert_session_ownership）完成，此处不做重复校验。
+    """
+    if not session_id:
+        return []
+    rows = (
+        db.execute(
+            select(Message.role, Message.content)
+            .where(Message.session_id == session_id)
+            .order_by(desc(Message.id))
+            .limit(limit)
+        )
+        .all()
+    )
+    return [{"role": r.role, "content": r.content} for r in reversed(rows)]
+
+
 def append_turn(
     db,
     session_id: str,

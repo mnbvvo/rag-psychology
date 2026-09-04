@@ -97,7 +97,7 @@ async def _assert_session_ownership(session_id, user_id: str, db: AsyncSession) 
         raise HTTPException(status_code=403, detail="无权访问该会话")
 
 
-def _persist_payload_sync(
+def _flush_db_turn_sync(
     session_id: str,
     question: str,
     answer: str,
@@ -108,17 +108,17 @@ def _persist_payload_sync(
     safety_note: Optional[str] = None,
     answer_safety_check: Optional[dict] = None,
 ) -> None:
-    """一轮问答的落库 + 长期记忆（同步实现，由后台 Worker 线程池调用）。
+    """会话落库 + 危机审计（纯 DB 写，毫秒级）。
 
-    对应架构图「持久化/记忆写入 → Queue → Worker → DB」虚线路径的任务体：
-    - 含同步 DB 写（get_db/crud）与同步 embedding（长期记忆 save_turn 两次 embed）；
-    - 由 modules/bg_queue 的 Worker 经 asyncio.to_thread 执行，每个任务独立 DB Session；
-    - 失败不影响回答本身，只打告警。
+    由请求完成路径**同步**执行（query/stream 返回前）：服务端短期窗口改为
+    从 messages 表按会话组装，本轮若不在返回前落库，下一条请求的窗口就会
+    永远缺这一轮。失败重试一次后告警，不影响已生成的回答。
+    危机/高危审计属关键数据（合规留痕），同步直写、不依赖内存队列。
     """
     global _persist_total, _persist_failures, _persist_critical_failures
     current_question = (question or "").strip()
-    # 高危/危机审计属于关键数据：若本函数被请求内同步执行（见 _enqueue_persist），
-    # 其失败必须在计数上单独体现，不允许与普通会话混在一起被"尽力而为"掩盖。
+    # 高危/危机审计属于关键数据：失败必须在计数上单独体现，不允许与普通
+    # 会话混在一起被"尽力而为"掩盖。
     critical = bool(is_crisis_response) or bool(
         safety_check and safety_check.get("is_crisis")
     ) or bool(answer_safety_check and answer_safety_check.get("is_crisis"))
@@ -188,14 +188,21 @@ def _persist_payload_sync(
                     flush=True,
                 )
 
-    # 长期记忆落库（向量检索式）：本轮问答 + embedding 写入 user_chat_history
-    if settings.MEMORY_ENABLED and current_question:
-        try:
-            from modules.memory import memory_service
 
-            memory_service.save_turn(user_id, current_question, answer or "")
-        except Exception as e:
-            print(f"[memory][WARN] 长期记忆落库失败: {e}", flush=True)
+def _flush_memory_sync(user_id: str, question: str, answer: str) -> None:
+    """长期记忆落库（慢路径：2 次 embedding API 调用，数百 ms），后台队列执行。
+
+    与会话落库拆分：会话同步（毫秒级，窗口一致性），embedding 后台（不阻塞
+    SSE 返回）。失败不影响回答本身，只打告警。
+    """
+    if not settings.MEMORY_ENABLED or not (question or "").strip():
+        return
+    try:
+        from modules.memory import memory_service
+
+        memory_service.save_turn(user_id, (question or "").strip(), answer or "")
+    except Exception as e:
+        print(f"[memory][WARN] 长期记忆落库失败: {e}", flush=True)
 
 
 async def _enqueue_persist(
@@ -209,29 +216,30 @@ async def _enqueue_persist(
     safety_note: Optional[str] = None,
     answer_safety_check: Optional[dict] = None,
 ) -> None:
-    """投递持久化任务到后台队列；队列未启动/已满时回退请求内同步执行（可靠性兜底）。
+    """持久化编排（2026-09-04 起会话同步落库）：
 
-    高危/危机审计属于关键数据（验收方案 §8：不得仅依靠内存队列"尽力而为"保存），
-    一律**请求内同步写入**，不进入进程内内存队列——即使进程随后崩溃/关闭，
-    危机审计也已落库，不会被内存队列丢弃。
+    1. 会话 + 审计（纯 DB，毫秒级）：**请求内同步执行**——服务端短期窗口已改为
+       从 messages 表按会话组装（前端只发 session_id+本轮问题），本轮若不在
+       返回前落库，下一条请求的窗口会永远缺这一轮。危机审计同属关键数据，
+       绝不进内存队列（进程崩溃也不丢）。
+    2. 长期记忆 embedding（2 次 API，数百 ms）：后台队列执行，队列不可用/已满
+       时回退请求内线程池同步执行（可靠性兜底）。
+    失败不影响回答本身（会话落库失败仅告警并计数）。
     """
     from modules.bg_queue import bg_queue
 
-    payload = (
+    # 1) 会话落库 + 危机审计（同步）
+    await run_in_threadpool(
+        _flush_db_turn_sync,
         session_id, question, answer, title, user_id,
         safety_check, is_crisis_response, safety_note, answer_safety_check,
     )
-    critical = bool(is_crisis_response) or bool(
-        safety_check and safety_check.get("is_crisis")
-    ) or bool(answer_safety_check and answer_safety_check.get("is_crisis"))
-    if critical:
-        # 关键数据：同步直写（高危低频，毫秒级 DB insert，请求内可接受）
-        await run_in_threadpool(_persist_payload_sync, *payload)
-        return
-    ok = await bg_queue.enqueue(_persist_payload_sync, *payload)
-    if not ok:
-        # 回退：请求内线程池执行（与旧行为一致）
-        await run_in_threadpool(_persist_payload_sync, *payload)
+    # 2) 长期记忆 embedding（慢）入队；队列不可用回退请求内同步
+    if settings.MEMORY_ENABLED and (question or "").strip():
+        payload = (user_id, (question or "").strip(), answer or "")
+        ok = await bg_queue.enqueue(_flush_memory_sync, *payload)
+        if not ok:
+            await run_in_threadpool(_flush_memory_sync, *payload)
 
 
 # ---------------- AI 问答并发准入（总稿 §4，Phase 1 memory） ----------------
@@ -504,6 +512,7 @@ async def query(
             check_safety=request.safety_enabled,
             user_id=user_id,
             rag_enabled=request.rag_enabled,
+            session_id=request.session_id,
             # 同步接口取消语义：生成过程中逐 chunk 检查取消标记，命中即终止上游生成，
             # 不再白烧 token（验收方案 §2.2：不能只设置 cancelling 标志后仍生成完整答案）
             cancel_check=lambda: admission.is_cancelling(request_id),
@@ -684,6 +693,7 @@ async def query_stream(
                 check_safety=request.safety_enabled,
                 user_id=user_id,
                 rag_enabled=request.rag_enabled,
+                session_id=request.session_id,
             )
             if prep.get("is_crisis_response"):
                 # 高危拦截同样写会话与危机审计（与 /api/query 高危路径对齐；落库后台化）

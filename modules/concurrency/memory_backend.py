@@ -125,7 +125,14 @@ class MemoryAdmissionBackend(AdmissionBackend):
         t0 = time.monotonic()
         deadline = t0 + self.queue_wait_timeout_seconds
         while True:
-            if entry.state == "running":
+            if entry.request_id in self._active:
+                # 槽位实得即放行。state 既可能是 running（正常 _promote），也可能
+                # 是 _promote 置位后、本协程恢复前被 cancel() 置成的 cancelling ——
+                # 只要已入 _active 就算拿到槽位：取消终态由调用方 release() 唯一
+                # 裁决（cancel_requested=True → CANCELLED 并释放 _active）。
+                # 若此处不返回 STARTED 而继续等待，会卡到 deadline 被 _finalize_queued
+                # 按“排队超时”清理 —— 该函数只清 _entries/_queue、不碰 _active，
+                # 导致槽位永久泄漏（promote×cancel 竞态，见 scripts/test_promote_cancel_regression.py）。
                 return WaitResult(WaitCode.STARTED, wait_ms=(time.monotonic() - t0) * 1000)
             if entry.terminal is not None:
                 code = (
@@ -220,7 +227,15 @@ class MemoryAdmissionBackend(AdmissionBackend):
 
     # ---------------- 内部工具 ----------------
     def _finalize_queued(self, entry: _Entry, reason: str) -> None:
-        """把仍处于队列的 entry 移除并置终态（cancel / queue_timeout 共用）。"""
+        """把仍处于队列的 entry 移除并置终态（cancel / queue_timeout 共用）。
+
+        门禁：entry 已转入 _active（_promote 放行后）时拒绝走本路径 —— 槽位真实
+        存在，终态必须由 release() 裁决并释放 _active；若在此清 _entries 会破坏
+        “_entries 与 _active 同生共死”不变量，造成槽位永久泄漏。正常路径下
+        wait_until_running 保证 active 条目返回 STARTED，本分支不可达（纯防御）。
+        """
+        if entry.request_id in self._active:
+            return
         if entry in self._queue:
             self._queue.remove(entry)
         self._entries.pop(entry.request_id, None)
