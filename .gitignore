@@ -19,3 +19,6 @@ system_prompt.json
 data/
 # PostgreSQL 备份文件（运行时产物，不入库）
 backups/
+
+
+tests/
