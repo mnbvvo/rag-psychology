@@ -4,7 +4,6 @@ FastAPI服务接口
 """
 import sys
 import os
-import re
 import atexit
 import socket
 import subprocess
@@ -16,9 +15,19 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import time
+import logging
 from collections import defaultdict, deque
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+# 日志基础（2026-09-07 起）：根 logger 统一时间戳/级别/来源格式；业务模块用
+# logger=logging.getLogger("rag.api") 记录（uvicorn 自带 access/error logger 不受影响）。
+# 遗留 print 将随改动逐步迁移（96 处，非功能性，低风险分批替换）。
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("rag.api")
+
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.concurrency import run_in_threadpool
@@ -44,6 +53,18 @@ from modules.concurrency.models import (
 )
 from config.settings import settings
 from db import init_db, crud, crud_async
+# 公共编排工具（会话落库/危机审计/长期记忆/SSE/准入响应）已下沉 modules/gateway.py，
+# Web 端与小程序 /api/mp/* 共用同一实现；别名保持原名，本文件调用点语义不变。
+from modules.gateway import (
+    _ADMISSION_RETRY_AFTER,
+    admission_json as _admission_json,
+    sse as _sse,
+    sse_queue_event as _sse_queue_event,
+    enqueue_persist as _enqueue_persist,
+    flush_db_turn_sync as _flush_db_turn_sync,
+    flush_memory_sync as _flush_memory_sync,
+    get_persist_metrics,
+)
 from api.auth import router as auth_router
 from api.deps import get_current_user, get_db_session, require_admin
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,6 +78,11 @@ app = FastAPI(
 
 # 认证路由（/api/auth/register、/api/auth/login、/api/auth/me）
 app.include_router(auth_router)
+# 微信小程序通道（/api/mp/register|update|profile|query|query/stream）
+# 与 Web 端 JWT 身份并存：身份来自请求体 userId（模式 a 内网直传，见 api/mp.py 头注释）
+from api.mp import router as mp_router
+
+app.include_router(mp_router)
 
 # 跨域：默认仅放行本服务同源 + localhost（前端由本服务托管时同源本不需要跨域；
 # 若前端独立部署 / 用开发服务器，请在 .env 用 CORS_ORIGINS 显式放行，切勿用 "*"）。
@@ -69,14 +95,10 @@ app.add_middleware(
 )
 
 
-# 简单内存限流：仅针对 POST /api/query 与 /api/query/stream，防止单客户端刷接口
+# 简单内存限流：覆盖 POST /api/query(,stream) 与小程序 /api/mp/* 全部（含
+# GET /api/mp/profile），防止单客户端刷接口/高频枚举档案
 _rate_limit_store: dict[str, deque] = defaultdict(deque)
 _rate_limit_last_sweep = 0.0  # 上次空桶清扫时间（限流桶键回收用）
-
-# 后台持久化可靠性指标（/api/health 暴露；落库失败必须对监控可见，见验收方案 §8）
-_persist_total = 0                 # 已投递的持久化任务数（含同步回退执行）
-_persist_failures = 0              # 会话落库最终失败累计（重试后仍失败）
-_persist_critical_failures = 0     # 危机审计/高危落库最终失败累计（最敏感数据，单独计数）
 
 
 # ---------------- 越权预校验（在调用 LLM 之前快速失败） ----------------
@@ -95,179 +117,6 @@ async def _assert_session_ownership(session_id, user_id: str, db: AsyncSession) 
         return
     if not await crud_async.session_belongs_to(db, session_id, user_id):
         raise HTTPException(status_code=403, detail="无权访问该会话")
-
-
-def _flush_db_turn_sync(
-    session_id: str,
-    question: str,
-    answer: str,
-    title: Optional[str],
-    user_id: str,
-    safety_check: Optional[dict] = None,
-    is_crisis_response: bool = False,
-    safety_note: Optional[str] = None,
-    answer_safety_check: Optional[dict] = None,
-) -> None:
-    """会话落库 + 危机审计（纯 DB 写，毫秒级）。
-
-    由请求完成路径**同步**执行（query/stream 返回前）：服务端短期窗口改为
-    从 messages 表按会话组装，本轮若不在返回前落库，下一条请求的窗口就会
-    永远缺这一轮。失败重试一次后告警，不影响已生成的回答。
-    危机/高危审计属关键数据（合规留痕），同步直写、不依赖内存队列。
-    """
-    global _persist_total, _persist_failures, _persist_critical_failures
-    current_question = (question or "").strip()
-    # 高危/危机审计属于关键数据：失败必须在计数上单独体现，不允许与普通
-    # 会话混在一起被"尽力而为"掩盖。
-    critical = bool(is_crisis_response) or bool(
-        safety_check and safety_check.get("is_crisis")
-    ) or bool(answer_safety_check and answer_safety_check.get("is_crisis"))
-
-    def _flush_once() -> None:
-        with crud.get_db() as db:
-            crud.append_turn(
-                db,
-                session_id,
-                current_question,
-                answer or "",
-                # 自动命名提示：优先用前端首次提问传入的标题，否则回退到当前问题
-                title=(title or current_question or None),
-                user_id=user_id,
-            )
-            sc = safety_check
-            if sc and sc.get("is_crisis"):
-                crud.log_crisis(
-                    db,
-                    session_id,
-                    level=sc.get("level", "unknown"),
-                    keywords_found=sc.get("keywords_found"),
-                    question=current_question,
-                    response=answer if is_crisis_response else safety_note,
-                    is_crisis_response=bool(is_crisis_response),
-                    detect_method=sc.get("detect_method") if isinstance(sc, dict) else None,
-                    confidence=sc.get("confidence") if isinstance(sc, dict) else None,
-                    user_id=user_id,
-                )
-            # 回答侧命中高危：另记一条审计（detect_method=answer_check）
-            ans_sc = answer_safety_check
-            if ans_sc and ans_sc.get("is_crisis"):
-                crud.log_crisis(
-                    db,
-                    session_id,
-                    level=ans_sc.get("level", "high"),
-                    keywords_found=ans_sc.get("keywords_found"),
-                    question=current_question,
-                    response=answer or "",
-                    is_crisis_response=False,
-                    detect_method="answer_check",
-                    user_id=user_id,
-                )
-
-    _persist_total += 1
-    try:
-        _flush_once()
-    except Exception as e:
-        # 瞬时故障（连接抖动/锁等待/网络闪断）重试一次，降低偶发静默丢失
-        time.sleep(0.3)
-        try:
-            _flush_once()
-            print(f"[persist][WARN] 首次落库失败后重试成功: {type(e).__name__}", flush=True)
-        except Exception as e2:
-            _persist_failures += 1
-            if critical:
-                _persist_critical_failures += 1
-                print(
-                    f"[persist][CRITICAL] 危机审计/高危落库最终失败（累计 {_persist_critical_failures}）: "
-                    f"{type(e2).__name__}: {e2}",
-                    flush=True,
-                )
-            else:
-                print(
-                    f"[persist][ERROR] 会话持久化最终失败（累计 {_persist_failures}，回答已正常返回）: "
-                    f"{type(e2).__name__}: {e2}",
-                    flush=True,
-                )
-
-
-def _flush_memory_sync(user_id: str, question: str, answer: str) -> None:
-    """长期记忆落库（慢路径：2 次 embedding API 调用，数百 ms），后台队列执行。
-
-    与会话落库拆分：会话同步（毫秒级，窗口一致性），embedding 后台（不阻塞
-    SSE 返回）。失败不影响回答本身，只打告警。
-    """
-    if not settings.MEMORY_ENABLED or not (question or "").strip():
-        return
-    try:
-        from modules.memory import memory_service
-
-        memory_service.save_turn(user_id, (question or "").strip(), answer or "")
-    except Exception as e:
-        print(f"[memory][WARN] 长期记忆落库失败: {e}", flush=True)
-
-
-async def _enqueue_persist(
-    session_id: str,
-    question: str,
-    answer: str,
-    title: Optional[str],
-    user_id: str,
-    safety_check: Optional[dict] = None,
-    is_crisis_response: bool = False,
-    safety_note: Optional[str] = None,
-    answer_safety_check: Optional[dict] = None,
-) -> None:
-    """持久化编排（2026-09-04 起会话同步落库）：
-
-    1. 会话 + 审计（纯 DB，毫秒级）：**请求内同步执行**——服务端短期窗口已改为
-       从 messages 表按会话组装（前端只发 session_id+本轮问题），本轮若不在
-       返回前落库，下一条请求的窗口会永远缺这一轮。危机审计同属关键数据，
-       绝不进内存队列（进程崩溃也不丢）。
-    2. 长期记忆 embedding（2 次 API，数百 ms）：后台队列执行，队列不可用/已满
-       时回退请求内线程池同步执行（可靠性兜底）。
-    失败不影响回答本身（会话落库失败仅告警并计数）。
-    """
-    from modules.bg_queue import bg_queue
-
-    # 1) 会话落库 + 危机审计（同步）
-    await run_in_threadpool(
-        _flush_db_turn_sync,
-        session_id, question, answer, title, user_id,
-        safety_check, is_crisis_response, safety_note, answer_safety_check,
-    )
-    # 2) 长期记忆 embedding（慢）入队；队列不可用回退请求内同步
-    if settings.MEMORY_ENABLED and (question or "").strip():
-        payload = (user_id, (question or "").strip(), answer or "")
-        ok = await bg_queue.enqueue(_flush_memory_sync, *payload)
-        if not ok:
-            await run_in_threadpool(_flush_memory_sync, *payload)
-
-
-# ---------------- AI 问答并发准入（总稿 §4，Phase 1 memory） ----------------
-# 429 Retry-After：建议与排队超时同量级（上限 60s）
-_ADMISSION_RETRY_AFTER = str(max(1, min(60, int(settings.AI_QUEUE_WAIT_TIMEOUT_SECONDS))))
-
-
-def _admission_json(status: int, detail: str, code: str, headers: dict = None) -> JSONResponse:
-    """准入类错误的统一响应体：{detail, code} + 可选头（如 Retry-After）。
-
-    用 JSONResponse 而非 HTTPException，是为了让前端能按 code 精确分支，
-    同时保持 detail 中文提示向后兼容。
-    """
-    return JSONResponse(
-        status_code=status,
-        content={"detail": detail, "code": code},
-        headers=headers or {},
-    )
-
-
-def _sse_queue_event(request_id: str, position: int, queued: int, active: int) -> str:
-    return _sse("queue", {
-        "request_id": request_id,
-        "position": position,
-        "queued": queued,
-        "active": active,
-        "wait_timeout_seconds": settings.AI_QUEUE_WAIT_TIMEOUT_SECONDS,
-    })
 
 
 # ---------------- Phase 1 memory 准入后端：单实例守卫（验收方案 G-08 / 一票否决项 8） ----------------
@@ -347,7 +196,15 @@ def _acquire_single_instance_lock() -> None:
 
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
-    if request.url.path in ("/api/query", "/api/query/stream") and request.method == "POST":
+    path = request.url.path
+    # 覆盖范围：Web 问答两个 + 小程序 /api/mp/* 全部（POST 写接口防刷；
+    # GET /api/mp/profile 防高频档案枚举——虽然 userId 不可顺序枚举，
+    # 内网误暴露时紧凑的 IP 桶仍能压住单点批量探测）
+    protected = (
+        request.method == "POST"
+        and (path.startswith("/api/mp/") or path in ("/api/query", "/api/query/stream"))
+    ) or (request.method == "GET" and path == "/api/mp/profile")
+    if protected:
         client = request.client.host if request.client else "unknown"
         now = time.time()
         window = settings.RATE_LIMIT_SECONDS
@@ -370,6 +227,24 @@ async def rate_limit_middleware(request: Request, call_next):
             for key in [k for k, v in _rate_limit_store.items() if not v]:
                 del _rate_limit_store[key]
     return await call_next(request)
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """请求关联（2026-09-07）：每请求生成 request_id（12 hex），放 request.state、
+    回写响应头 X-Request-ID；未捕获异常在这里打全堆栈（rid + method + path），
+    修复此前异常只在端点内 print 类型名、无法跨日志关联单次请求的排障盲区。
+    """
+    rid = uuid.uuid4().hex[:12]
+    request.state.request_id = rid
+    try:
+        response = await call_next(request)
+    except Exception:
+        # 端点漏网的异常：带 rid 全堆栈；HTTP 错误由端点/Starlette 层正常转换
+        logger.exception("未捕获异常 [rid=%s] %s %s", rid, request.method, request.url.path)
+        raise
+    response.headers["X-Request-ID"] = rid
+    return response
 
 
 class QueryRequest(BaseModel):
@@ -490,17 +365,31 @@ async def query(
         )
     ticket = sub.ticket
     wait_ms = 0.0
-    if sub.code == SubmitCode.QUEUED:
-        # 排队等待放行（同步接口无 SSE，仅静默等待）
-        wait_res = await admission.wait_until_running(request_id)
-        wait_ms = wait_res.wait_ms
-        if wait_res.code == WaitCode.QUEUE_TIMEOUT:
-            admission.record_dropped(ticket, wait_ms, TerminalReason.QUEUE_TIMEOUT.value)
-            return _admission_json(503, "排队等待超时，请重新发起", AI_QUEUE_TIMEOUT)
-        if wait_res.code == WaitCode.CANCELLED:
-            admission.record_dropped(ticket, wait_ms, TerminalReason.CANCELLED.value)
-            return _admission_json(409, "请求已取消", AI_REQUEST_CANCELLED)
-    admission.note_started(ticket, wait_ms)
+    try:
+        if sub.code == SubmitCode.QUEUED:
+            # 排队等待放行（同步接口无 SSE，仅静默等待）
+            wait_res = await admission.wait_until_running(request_id)
+            wait_ms = wait_res.wait_ms
+            if wait_res.code == WaitCode.QUEUE_TIMEOUT:
+                admission.record_dropped(ticket, wait_ms, TerminalReason.QUEUE_TIMEOUT.value)
+                return _admission_json(503, "排队等待超时，请重新发起", AI_QUEUE_TIMEOUT)
+            if wait_res.code == WaitCode.CANCELLED:
+                admission.record_dropped(ticket, wait_ms, TerminalReason.CANCELLED.value)
+                return _admission_json(409, "请求已取消", AI_REQUEST_CANCELLED)
+        admission.note_started(ticket, wait_ms)
+    except BaseException:
+        # 排队等待期间协程被取消（客户端断开）或异常：条目仍在 _queue/_entries、
+        # _user_req[user_id] 残留 → 该用户此后每次 submit 固定 409 AI_REQUEST_IN_PROGRESS，
+        # 且队列孤儿会被后续 _promote 提升为无人消费的 running → 活跃槽位永久泄漏
+        # （R-10 SSE 同款坑）。对非 _active 条目 release 返回 NOT_RUNNING、清不掉占位，
+        # 必须先 cancel（queued → _finalize_queued 清占位；已 promote 的 running →
+        # 置 cancelling），再 release 释放可能已持有的活跃槽位（两分支幂等覆盖）。
+        # 与 SSE 端点 finally 的 cancel 兜底同一语义（修复同步路径遗漏，2026-09-07）。
+        try:
+            await admission.cancel(user_id, request_id)
+        finally:
+            await admission.release(ticket, terminal=TerminalReason.CANCELLED.value)
+        raise
 
     terminal = TerminalReason.COMPLETED.value
     try:
@@ -566,11 +455,6 @@ async def query(
     finally:
         # 无论成功/失败/取消，真实退出后释放槽位（幂等；防超卖）
         await admission.release(ticket, terminal=terminal)
-
-
-def _sse(event: str, data: dict) -> str:
-    """格式化一个 SSE 事件：`event:` + `data:` 两行 + 空行结尾。"""
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 @app.post("/api/query/stream")
@@ -752,12 +636,12 @@ async def query_stream(
                 yield _sse("token", {"text": chunk})
                 # 客户端断开（关页面/刷新）或用户取消 → 终止生成，避免浪费上游 token
                 if await stream_request.is_disconnected():
-                    print("[query/stream] 客户端断开，终止生成", flush=True)
+                    logger.info("[query/stream] 客户端断开，终止生成 [rid=%s]", getattr(stream_request.state, "request_id", "-"))
                     terminal = TerminalReason.DISCONNECTED.value
                     stopped = True
                     break
                 if admission.is_cancelling(request_id):
-                    print("[query/stream] 用户取消，终止生成", flush=True)
+                    logger.info("[query/stream] 用户取消，终止生成 [rid=%s]", getattr(stream_request.state, "request_id", "-"))
                     terminal = TerminalReason.CANCELLED.value
                     stopped = True
                     break
@@ -807,7 +691,7 @@ async def query_stream(
         except Exception as e:
             # 记录完整异常到服务端日志；SSE error 事件只带异常类型（不暴露堆栈/路径）
             terminal = TerminalReason.FAILED.value
-            print(f"[query/stream][ERROR] {type(e).__name__}: {e}", flush=True)
+            logger.exception("[query/stream] 流式生成异常 [rid=%s]", getattr(stream_request.state, "request_id", "-"))
             yield _sse("error", {
                 "detail": f"生成失败（{type(e).__name__}），请稍后重试。",
                 "error_type": type(e).__name__,
@@ -822,7 +706,7 @@ async def query_stream(
             try:
                 await admission.cancel(user_id, request_id)
             except Exception as _e:  # noqa: BLE001 - 清理兜底失败仅告警，不影响主流程
-                print(f"[query/stream][WARN] 排队残留清理失败: {type(_e).__name__}: {_e}", flush=True)
+                logger.warning("[query/stream] 排队残留清理失败 [rid=%s]: %s", getattr(stream_request.state, "request_id", "-"), _e)
 
     return StreamingResponse(
         event_stream(),
@@ -873,32 +757,72 @@ async def concurrency_status():
 @app.get("/api/health")
 async def health_check():
     """
-    健康检查接口：同时暴露后台持久化可靠性指标（落库失败必须可观测，验收方案 §8）。
+    健康检查接口：同时暴露后台持久化可靠性指标与关键依赖（DB / 可选 embedding 上游）。
+
+    - DB 探活：SELECT 1（廉价，恒开）；失败 → status=degraded（仍 200，兼容既有探活脚本）；
+    - embedding 上游探测：settings.HEALTH_PROBE_EMBEDDING=True 时每次真实 embed 一次
+      "ping"（计费/耗时，默认关）。
     """
+    from fastapi.concurrency import run_in_threadpool
+
     from modules.bg_queue import bg_queue
+    persist_metrics = get_persist_metrics()
+
+    def _db_probe() -> bool:
+        from sqlalchemy import text
+
+        from db import SessionLocal
+
+        with SessionLocal() as c:
+            c.execute(text("SELECT 1"))
+        return True
+
+    try:
+        await run_in_threadpool(_db_probe)
+        db_status = "ok"
+    except Exception as e:
+        db_status = f"fail:{type(e).__name__}"
+
+    embedding_status = None
+    if settings.HEALTH_PROBE_EMBEDDING:
+        try:
+            from modules.vector_store import TimedOpenAIEmbeddings
+
+            emb = TimedOpenAIEmbeddings(
+                model=settings.EMBEDDING_MODEL,
+                openai_api_key=settings.EMBEDDING_API_KEY,
+                base_url=settings.EMBEDDING_API_BASE,
+                tiktoken_enabled=False, check_embedding_ctx_length=False,
+                timeout=5, max_retries=0,
+            )
+            emb.embed_query("ping")
+            embedding_status = "ok"
+        except Exception as e:
+            embedding_status = f"fail:{type(e).__name__}"
 
     return {
-        "status": "healthy",
+        "status": "healthy" if db_status == "ok" else "degraded",
         "version": "1.0.0",
+        "deps": {"db": db_status, "embedding": embedding_status},
         "persist": {
             "queue_depth": bg_queue.queue_depth(),
-            "total": _persist_total,
+            "total": persist_metrics["total"],
             "completed": bg_queue.completed_count,
-            "failures": _persist_failures,
-            "critical_failures": _persist_critical_failures,
+            "failures": persist_metrics["failures"],
+            "critical_failures": persist_metrics["critical_failures"],
         },
     }
 
 
 @app.get("/api/sessions")
 async def list_sessions(
-    limit: int = 50,
+    limit: int = Query(50, ge=1, le=200, description="返回条数上限（1-200），防全量拖出"),
     db: AsyncSession = Depends(get_db_session),
     current_user=Depends(get_current_user),
 ):
     """列出当前用户的最近会话（含消息数）；他人会话不可见（数据隔离）。
 
-    请求级 AsyncSession + selectinload(messages)（异步数据层，防 MissingGreenlet）。
+    消息数由 crud_async.list_sessions 的 COUNT 聚合算出，不整表载入消息。
     """
     rows = await crud_async.list_sessions(db, current_user.id, limit)
     return [
@@ -907,9 +831,9 @@ async def list_sessions(
             "title": s.title,
             "created_at": s.created_at.isoformat() if s.created_at else None,
             "updated_at": s.updated_at.isoformat() if s.updated_at else None,
-            "message_count": len(s.messages),
+            "message_count": cnt,
         }
-        for s in rows
+        for s, cnt in rows
     ]
 
 
@@ -961,8 +885,8 @@ async def rename_session(
     db: AsyncSession = Depends(get_db_session),
     current_user=Depends(get_current_user),
 ):
-    """重命名会话；非本人会话 → 403。"""
-    sess = await crud_async.get_session_with_messages(db, session_id)
+    """重命名会话；非本人会话 → 403。归属校验走轻量 get_session（不载入消息）。"""
+    sess = await crud_async.get_session(db, session_id)
     if sess is None or sess.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="无权操作该会话")
     sess.title = payload.name[:255]
@@ -975,8 +899,8 @@ async def delete_session(
     db: AsyncSession = Depends(get_db_session),
     current_user=Depends(get_current_user),
 ):
-    """删除会话（级联删除其消息）；非本人会话 → 403。"""
-    sess = await crud_async.get_session_with_messages(db, session_id)
+    """删除会话（级联删除其消息）；非本人会话 → 403。归属校验走轻量 get_session。"""
+    sess = await crud_async.get_session(db, session_id)
     if sess is None or sess.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="无权操作该会话")
     await db.delete(sess)
@@ -1006,7 +930,7 @@ async def admin_list_users(
 
 @app.get("/api/admin/crisis-audit")
 async def admin_list_crisis_audits(
-    limit: int = 100,
+    limit: int = Query(100, ge=1, le=200, description="返回条数上限（1-200），防一次全量拖出敏感审计"),
     db: AsyncSession = Depends(get_db_session),
     admin=Depends(require_admin),
 ):
@@ -1087,7 +1011,9 @@ async def startup_event():
     print(f"模型: {settings.CHAT_MODEL}")
     print(f"向量数据库: {settings.VECTOR_BACKEND}")
     # 脱敏打印：DB URL 含密码，不得直接写入终端/日志（统一日志聚合时会泄露）
-    print(f"关系数据库: {re.sub(r'(://[^:/]+:)[^@/]+(@)', lambda m: m.group(1) + '******' + m.group(2), settings.DB_URL)}")
+    from modules.security import redact_db_url
+
+    print(f"关系数据库: {redact_db_url(settings.DB_URL)}")
     print(f"RAG 检索: {'启用' if settings.RAG_ENABLED else '禁用（纯对话模式，不加载重排/BM25）'}")
     print(f"安全检查: {'启用' if settings.SAFETY_ENABLED else '禁用（不加载语义锚点）'}")
     print(f"本地重排: {'启用（' + settings.RERANK_MODEL + '）' if settings.RERANK_ENABLED and settings.RAG_ENABLED else '未启用'}")

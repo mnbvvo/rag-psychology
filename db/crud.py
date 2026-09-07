@@ -51,9 +51,16 @@ def create_user(
     display_name: str = "",
     role: str = "user",
     is_active: bool = True,
+    id: str | None = None,
 ) -> User:
+    """创建用户；id 缺省时服务端生成 uuid4().hex。
+
+    id 显式传入用于微信小程序通道（/api/mp/*）：把外部 userId 原样作为 users.id
+    落库（镜像行，不可登录，username=mp_<sha1> 前缀），使会话/记忆/危机审计的
+    user_id 归属与外部 id 直接对齐，无需映射表。
+    """
     user = User(
-        id=uuid.uuid4().hex,
+        id=id or uuid.uuid4().hex,
         username=username,
         password_hash=password_hash,
         display_name=display_name or username,
@@ -287,7 +294,10 @@ def search_chat_history(
     """向量检索该用户的相似历史（调 fn_search_chat_history，余弦相似度降序）。
 
     按 user_id 全量检索：该用户所有会话的历史都参与召回（不按会话隔离）。
-    函数内部 LIMIT 5 硬编码，如需更多条需同步修改 scripts/user_chat_history.sql。
+    函数内部 LIMIT 5 硬编码，如需更多条需同步修改 db/__init__.py 的
+    _LONG_MEMORY_FN_SQL 与 scripts/user_chat_history.sql。
+    函数与 HNSW 索引由 init_db() 启动自愈幂等创建（_ensure_user_chat_history_sql），
+    新库无需手工执行 SQL（858a30f 曾误删 DDL 导致新库静默失效，已修复）。
     返回每条含 id/user_id/query/answer/created_at/cosine_similarity。
     """
     rows = db.execute(

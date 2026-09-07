@@ -1,34 +1,41 @@
-# Web 框架
+# ---- Web 框架 ----
 fastapi>=0.110.0
 uvicorn>=0.29.0
 python-dotenv>=1.0.0
 pydantic>=2.6.0
 
-# LLM / RAG（LangChain 生态，仅保留主链路实际 import 的包）
+# ---- LLM / RAG（LangChain 生态 ----
 langchain-openai>=0.1.0
 langchain-chroma>=0.1.0
 langchain-core>=0.2.0
 chromadb>=0.5.0
 
-# 关系型数据库（结构化持久化：会话 / 消息 / 危机审计，与 Chroma 向量库互补）
+# ---- 关系型数据库（SQLAlchemy 2 async 主链路） ----
 sqlalchemy>=2.0.0
 
-# LLM 客户端（langchain-openai 的运行时依赖，对话实际走它；不显式列出会依赖传递安装，环境不可复现）
+# ---- LLM 客户端（langchain-openai 运行时依赖） ----
 openai>=1.30.0
-# HTTP 客户端（Starlette / langchain 底层使用）
 httpx>=0.27.0
 
-# 认证与授权（登录系统：JWT Bearer + bcrypt 密码哈希）
+# ---- 认证与授权 ----
 pyjwt>=2.8.0
 bcrypt>=4.0.0
 
-# 本地重排序（Cross-Encoder，bge-reranker-v2-m3）
-# torch 依赖较大且分 CPU/CUDA 版：CPU 直接 pip install torch；
-# 有 NVIDIA GPU 建议装 CUDA 版（python -m pip install torch --index-url https://download.pytorch.org/whl/cu124）
+# ---- 本地重排序（Cross-Encoder，bge-reranker-v2-m3） ----
+# torch 体积大且分 CPU/CUDA 版，未在此列强制：CPU 直接 pip install torch；
+# NVIDIA GPU 建议 CUDA 版：pip install torch --index-url https://download.pytorch.org/whl/cu124
 sentence-transformers>=3.0.0
 
-# PostgreSQL + pgvector（生产数据库：关系库 SQLAlchemy + 向量库 LangChain PGVector）
+# ---- 混合检索 BM25（hybrid_search.py：中文分词 + OKAPI 检索，重排开启时生效） ----
+jieba>=0.42.1
+rank-bm25>=0.2.2
+
+# ---- 向量/数值（crisis_detector L1 语义锚点距离等显式使用；其余多为传递依赖） ----
+numpy>=1.26.0
+
+# ---- PostgreSQL + pgvector ----
+psycopg[binary]>=3.1
+# backup_pg.py（离线备份脚本）单独用 psycopg2 直连，保留：
 psycopg2-binary>=2.9.0
 pgvector>=0.2.0
 langchain-postgres>=0.0.15
-

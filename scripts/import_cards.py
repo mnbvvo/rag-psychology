@@ -144,8 +144,11 @@ def main() -> None:
         print(f"已写入 {min(offset + len(batch_documents), len(documents))}/{len(documents)} 张卡片")
 
     # 完成信息按后端给出实际落库位置（pgvector 显示连接；chroma 显示本地目录）
+    # ⚠️ 连接串含明文密码，打印必须经 redact_db_url 脱敏（曾直接打印泄露，2026-09-07 修复）
+    from modules.security import redact_db_url
+
     if store.backend == "pgvector":
-        print(f"导入完成：{len(documents)} 张卡片，向量已写入 pgvector（{store._pg_connection()} · {store.collection_name}）")
+        print(f"导入完成：{len(documents)} 张卡片，向量已写入 pgvector（{redact_db_url(store._pg_connection())} · {store.collection_name}）")
     else:
         print(f"导入完成：{len(documents)} 张卡片，向量库位于 {store.persist_directory}")
 

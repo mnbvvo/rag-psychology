@@ -131,6 +131,109 @@ def _migrate_user_columns() -> None:
         conn.commit()
 
 
+def _widen_user_id_columns() -> None:
+    """轻量迁移（PG only）：外部 userId 载体列扩到 VARCHAR(64)（幂等）。
+
+    微信小程序通道（/api/mp/*）把外部 userId（openid / UUID / 第三方长 id）原样
+    作为 users.id 使用；老库列宽为 VARCHAR(36)，超出会 data too long。扩列：
+    users.id / sessions.user_id / crisis_audit.user_id → VARCHAR(64)。
+    SQLite 为动态类型无需处理；新库由 models 直接建 64 宽，此处只处理老库。
+    """
+    if _is_sqlite(settings.DB_URL):
+        return
+    with engine.connect() as conn:
+        def _width(table: str, column: str):
+            row = conn.execute(
+                text(
+                    "SELECT character_maximum_length FROM information_schema.columns "
+                    "WHERE table_name = :t AND column_name = :c"
+                ),
+                {"t": table, "c": column},
+            ).first()
+            return int(row[0]) if row and row[0] is not None else None
+
+        targets = [("users", "id")] + [(t, "user_id") for t in _USER_TABLES]
+        for table, column in targets:
+            if _width(table, column) == 36:
+                conn.execute(
+                    text(f"ALTER TABLE {table} ALTER COLUMN {column} TYPE VARCHAR(64)")
+                )
+        conn.commit()
+
+
+# 长期记忆检索函数（PG）：按 user_id 余弦相似 top5；qa_embedding 优先、NULL 回退
+# embedding。DDL 原在 scripts/user_chat_history.sql，858a30f(4.1精简版)误删后
+# init_db 不再建 → 新库长期记忆静默失效。2026-09-07 恢复：函数体随本模块幂等创建，
+# 脚本文件已恢复作参考/手工兜底。函数体无维度字面量（按输入向量长度校验）；
+# 如需改 LIMIT 5，须同步改此处 + scripts/user_chat_history.sql + crud.search_chat_history。
+_LONG_MEMORY_FN_SQL = """
+CREATE OR REPLACE FUNCTION public.fn_search_chat_history(
+    p_query_vector json,
+    p_user_id      text DEFAULT NULL
+)
+ RETURNS TABLE(
+    id bigint,
+    user_id text,
+    query text,
+    answer text,
+    created_at timestamp with time zone,
+    cosine_similarity double precision
+)
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+    RETURN QUERY
+    SELECT
+        h.id,
+        h.user_id::text,
+        h.query::text,
+        h.answer::text,
+        h.created_at,
+        1 - (COALESCE(h.qa_embedding, h.embedding) <=> qv.v) AS cosine_similarity
+    FROM user_chat_history h,
+         (SELECT p_query_vector::text::vector AS v) qv
+    WHERE (p_user_id IS NULL OR h.user_id = p_user_id)
+      AND (h.qa_embedding IS NOT NULL OR h.embedding IS NOT NULL)
+    ORDER BY COALESCE(h.qa_embedding, h.embedding) <=> qv.v
+    LIMIT 5;
+END;
+$function$;
+"""
+
+
+def _ensure_user_chat_history_sql() -> None:
+    """启动自愈（PG only，幂等）：补齐长期记忆的检索函数 + HNSW 索引。
+
+    背景：user_chat_history 表结构由 models/create_all 建，但「检索函数 +
+    2 个 HNSW 向量索引 + user_id 索引」历史上只存在于 scripts/user_chat_history.sql
+    （858a30f 误删、init_db 不建）→ 新库长期记忆静默失效、向量检索退化为全表扫。
+    本函数在启动时补齐：函数缺失则创建；索引 CREATE INDEX IF NOT EXISTS 幂等；
+    维度从 settings.VECTOR_DIMENSION 动态取（与 models 列同源，防切模型漂移）。
+    SQLite 无 pgvector/plpgsql，跳过（该后端长期记忆本就不支持）。
+    """
+    if _is_sqlite(settings.DB_URL):
+        return
+    with engine.connect() as conn:
+        fn_exists = conn.execute(
+            text("SELECT count(*) FROM pg_proc WHERE proname = 'fn_search_chat_history'")
+        ).scalar()
+        if not fn_exists:
+            conn.execute(text(_LONG_MEMORY_FN_SQL))
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS idx_user_chat_history_user_id "
+                 "ON user_chat_history (user_id)")
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS idx_user_chat_history_embedding "
+                 "ON user_chat_history USING hnsw (embedding vector_cosine_ops)")
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS idx_user_chat_history_qa_embedding "
+                 "ON user_chat_history USING hnsw (qa_embedding vector_cosine_ops)")
+        )
+        conn.commit()
+
+
 def ensure_bootstrap_users() -> None:
     """引导账号（幂等）：legacy（历史数据归属）+ 初始管理员。
 
@@ -187,8 +290,15 @@ def init_db() -> None:
     try:
         _migrate_crisis_audit_columns()
         _migrate_user_columns()
+        _widen_user_id_columns()
     except Exception as e:
         print(f"[db][WARN] 列迁移失败（不影响启动）: {e}", flush=True)
+    # 长期记忆函数 + HNSW 索引启动自愈（幂等；858a30f 误删 DDL 后的兜底，
+    # 保证新库免手工即可用长期记忆；失败不影响启动，仅告警）
+    try:
+        _ensure_user_chat_history_sql()
+    except Exception as e:
+        print(f"[db][WARN] 长期记忆函数/索引补齐失败（长期记忆将不可用）: {e}", flush=True)
     # 引导账号：legacy + 初始管理员（失败不影响启动，仅告警）
     try:
         ensure_bootstrap_users()

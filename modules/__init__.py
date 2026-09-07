@@ -203,6 +203,7 @@ class PsychologyRAGSystem:
         user_id: Optional[str] = None,
         rag_enabled: Optional[bool] = None,
         session_id: Optional[str] = None,
+        profile_text: Optional[str] = None,
     ) -> Dict:
         """查询系统（同步完整流程：prepare + generate）。
 
@@ -212,6 +213,7 @@ class PsychologyRAGSystem:
         check_safety：None 用 settings.SAFETY_ENABLED；False 跳过整条安全链路。
         user_id：当前用户（提示词全局激活项解析 + 持久化归属）。
         session_id：question 单轮模式下的会话 id，服务端据此从 DB 注入短期窗口。
+        profile_text：家庭档案注入文本（小程序通道 /api/mp/*，见 rag_core._build_messages）。
         """
         # 全流程墙钟：从 prepare（安全+检索+重排）到生成结束，与 SSE 端点 total 语义一致
         t_query = time.perf_counter()
@@ -234,6 +236,7 @@ class PsychologyRAGSystem:
             timings=timings, messages=prep.get("norm_messages"),
             user_id=user_id,
             low_relevance=(bool(prep.get("rag_enabled")) and not prep.get("context")),
+            profile_text=profile_text,
         )
         prep["answer"] = gen["answer"]
         prep["sources"] = gen["sources"]
@@ -257,6 +260,7 @@ class PsychologyRAGSystem:
         rag_enabled: Optional[bool] = None,
         session_id: Optional[str] = None,
         cancel_check=None,
+        profile_text: Optional[str] = None,
     ) -> Dict:
         """查询系统（异步完整流程，非流式 /api/query 使用）：与 query 语义一致。
 
@@ -290,6 +294,7 @@ class PsychologyRAGSystem:
             user_id=user_id,
             low_relevance=(bool(prep.get("rag_enabled")) and not prep.get("context")),
             cancel_check=cancel_check,
+            profile_text=profile_text,
         )
         prep["answer"] = gen["answer"]
         prep["sources"] = gen["sources"]

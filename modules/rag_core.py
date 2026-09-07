@@ -172,6 +172,7 @@ class PsychologyRAG:
         messages: Optional[List[Dict]] = None,
         user_id: Optional[str] = None,
         low_relevance: Optional[bool] = None,
+        profile_text: Optional[str] = None,
     ) -> List:
         """组装直接传给 LLM 的消息列表（generate 与 stream_generate 共用）。
 
@@ -180,6 +181,9 @@ class PsychologyRAG:
         low_relevance：是否追加「未检索到足够资料」说明；None 时按 context 为空判定
         （兼容未显式传参的调用）。RAG 关闭（纯对话）时调用方应显式传 False——
         没有检索动作，不应向模型声明"本次未检索到资料"。
+        profile_text：可选——微信小程序通道（/api/mp/*）按 userId 读家庭档案并经
+        modules/family_profile 加工后的注入文本（已换算年龄、不含原始生日）。
+        拼在长期记忆段之后；Web 端不传则行为不变。
         本方法同时承载两条记忆通道：
         - 跨会话长期记忆（向量检索，注入 system prompt）；
         - 本会话最近 N 轮原文（human/ai 交替插入，解决指代消解）。
@@ -214,6 +218,10 @@ class PsychologyRAG:
                     system_prompt = f"{system_prompt}\n\n{mem_text}"
             except Exception as e:
                 print(f"[memory][WARN] 记忆上下文注入失败，忽略: {e}", flush=True)
+
+        # 家庭档案（小程序通道）：memory 段之后追加（有档案才拼，文本已加工）
+        if profile_text:
+            system_prompt = f"{system_prompt}\n\n{profile_text}"
 
         prompt_messages = [("system", system_prompt)]
         if settings.MEMORY_RECENT_ROUNDS > 0 and messages:
@@ -257,15 +265,17 @@ class PsychologyRAG:
         messages: Optional[List[Dict]] = None,
         user_id: Optional[str] = None,
         low_relevance: Optional[bool] = None,
+        profile_text: Optional[str] = None,
     ) -> Dict:
         """基于检索到的内容生成回答。
 
         messages：多轮对话历史；提供时会把完整历史拼入 prompt，question 仅用于检索与日志。
         user_id：当前用户（提示词全局激活项解析，透传保留）。
         low_relevance：是否追加「未检索到足够资料」说明（见 _build_messages）。
+        profile_text：家庭档案注入文本（小程序通道，见 _build_messages）。
         """
         prompt_messages = self._build_messages(
-            question, context, messages, user_id, low_relevance
+            question, context, messages, user_id, low_relevance, profile_text
         )
 
         # 生成回答（LLM 调用是主要耗时来源，单独计时）
@@ -298,6 +308,7 @@ class PsychologyRAG:
         user_id: Optional[str] = None,
         low_relevance: Optional[bool] = None,
         prompt_messages: Optional[List] = None,
+        profile_text: Optional[str] = None,
     ):
         """流式生成：与 generate 相同的提示词组装，逐 token 产出文本块（async generator）。
 
@@ -305,10 +316,12 @@ class PsychologyRAG:
         prompt_messages：可选。已组装好的消息列表（调用方若已在线程池完成
         _build_messages——含同步记忆检索/embedding——可传入跳过重复构建，避免
         这些同步调用直接跑在事件循环上阻塞所有并发请求）。
+        profile_text：家庭档案注入文本（小程序通道，见 _build_messages）；仅在
+        prompt_messages 未传入（本方法自行组装）时生效。
         """
         if prompt_messages is None:
             prompt_messages = self._build_messages(
-                question, context, messages, user_id, low_relevance
+                question, context, messages, user_id, low_relevance, profile_text
             )
         async for chunk in self.llm_stream.astream(prompt_messages):
             content = chunk.content if hasattr(chunk, "content") else str(chunk)
@@ -324,6 +337,7 @@ class PsychologyRAG:
         user_id: Optional[str] = None,
         low_relevance: Optional[bool] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
+        profile_text: Optional[str] = None,
     ) -> Dict:
         """异步生成（非流式路径用）：与 generate 相同语义，但 LLM 调用走原生 async。
 
@@ -338,7 +352,7 @@ class PsychologyRAG:
         """
         # 记忆检索等同步调用移出事件循环（线程池内完成）
         prompt_messages = await asyncio.to_thread(
-            self._build_messages, question, context, messages, user_id, low_relevance
+            self._build_messages, question, context, messages, user_id, low_relevance, profile_text
         )
         # 首 token 前若已被取消：不发起任何 LLM 调用，直接返回 cancelled
         if cancel_check is not None and cancel_check():

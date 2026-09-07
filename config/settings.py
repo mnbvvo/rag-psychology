@@ -113,9 +113,6 @@ class Settings:
     # 与 system/RAG/输出占比调优，别让窗口占满上下文。0=仅按轮数不设预算。
     MEMORY_RECENT_MAX_CHARS = int(os.getenv("MEMORY_RECENT_MAX_CHARS", "6000"))
 
-    # 遗留参数（旧「全量拼接历史」模式使用，已由向量检索式长期记忆取代，保留以兼容引用）
-    MAX_HISTORY_TURNS = 5
-
     # ============ 安全配置（路径锚定到项目根目录，避免 cwd 不同导致找不到文件） ============
     # 安全总开关：False 时整条安全链路（L0 关键词 + L1 语义 + 回答侧复查）全部跳过，
     # 不调 embedding、不调安全检测。可通过请求参数 safety_enabled 按次覆盖（None 用此全局值）。
@@ -151,9 +148,15 @@ class Settings:
     INIT_ADMIN_PASSWORD = os.getenv("INIT_ADMIN_PASSWORD", "admin123456")
 
     # 登录失败限流（内存级；多进程部署需改用共享存储）
-    LOGIN_MAX_FAILS = int(os.getenv("LOGIN_MAX_FAILS", "5"))  # 时间窗内最大失败次数（账号级锁定）
+    # 双维度：username 级（存在与否同代价计数，消除用户名存在性探针）+ IP 级
+    # （同 IP 换用户名探测的兜底）。彻底防分布式锁号需验证码/风控（超出本层能力）。
+    LOGIN_MAX_FAILS = int(os.getenv("LOGIN_MAX_FAILS", "5"))  # 窗口内最大失败次数（username 级锁定）
     LOGIN_LOCK_SECONDS = int(os.getenv("LOGIN_LOCK_SECONDS", "900"))  # 失败锁定时间窗（秒）= 15 分钟
-    LOGIN_IP_MAX_REQUESTS = int(os.getenv("LOGIN_IP_MAX_REQUESTS", "200"))  # 单 IP 60 秒内最大登录请求数（防止单 IP 爆破；并发压测需注册多账号时可调高）
+    LOGIN_IP_FAIL_MAX = int(os.getenv("LOGIN_IP_FAIL_MAX", "30"))  # 单 IP 窗口内累计失败上限 → 锁 IP（防换用户名逐个试）
+    LOGIN_IP_MAX_REQUESTS = int(os.getenv("LOGIN_IP_MAX_REQUESTS", "200"))  # 单 IP 60 秒内最大登录请求数（请求频率上限）
+    # username 失败桶数量上限：攻击者对随机不存在用户名灌桶只占 5 条内存/名；
+    # 超限后不再为新 username 建桶（仅记 IP），防桶集合无限膨胀
+    LOGIN_USER_BUCKET_MAX = int(os.getenv("LOGIN_USER_BUCKET_MAX", "20000"))
     REGISTER_IP_MAX_REQUESTS = int(os.getenv("REGISTER_IP_MAX_REQUESTS", "100"))  # 单 IP 60 秒内最大注册请求数（默认 100，压测建号可注入调高）
 
     # ============ 限流（仅 POST /api/query，内存级；多进程部署需改用共享存储） ============
@@ -176,14 +179,44 @@ class Settings:
     AI_BG_WORKERS = int(os.getenv("AI_BG_WORKERS", "1"))        # 后台落库 worker 数
     AI_BG_QUEUE_SIZE = int(os.getenv("AI_BG_QUEUE_SIZE", "512"))  # 队列上限（队满时回退请求内同步落库）
 
-    # ============ 服务配置（心理应用含危机内容，默认只绑本机，避免暴露到局域网） ============
-    HOST = "127.0.0.1"  # 监听地址；切勿改为 0.0.0.0 以免暴露到局域网
-    PORT = int(os.getenv("PORT", "8000"))  # 监听端口（env 可覆盖，便于多服务并存测试）
-    DEBUG = False  # 调试模式（开启时 uvicorn --reload 且单进程）
+    # ============ 微信小程序接入（/api/mp/*，与 JWT Web 端并存的第二身份通道） ============
+    # 身份信任模型：mp 接口不依赖 JWT，请求体 userId 即身份来源（对外部既有小程序
+    # 开放，后端不自建账号）。该信任只在受信边界内成立——服务应只绑内网/经网关
+    # 白名单（见 api/mp.py 头注释），切勿把 mp 通道暴露到公网，否则可伪造 userId
+    # 越权读取他人会话/危机审计。已实现：a=内网直传；b=微信 code2session 换 token；
+    # c=服务端中转（b/c 预留未实现，validate() 仅允许 a）。
+    MP_TRUST_MODE = os.getenv("MP_TRUST_MODE", "a")
+    # mp 通道共享 API-Key（服务间调用凭证，受信边界内第二道防线）：空 = 不启用
+    # （本地联调免 key）；非空 = /api/mp/* 全部端点须带 X-API-Key: <key>，防止
+    # 误暴露内网/同网段其它进程直接调用（含枚举 /api/mp/profile 读档案）。
+    MP_API_KEY = os.getenv("MP_API_KEY", "").strip()
+    # 外部 userId 长度上限（users.id / sessions.user_id 等已扩到 String(64)；超长拒绝）
+    MP_USER_ID_MAX_LEN = int(os.getenv("MP_USER_ID_MAX_LEN", "64"))
+    # 对话时是否注入加工后的家庭档案（register/update 落库后按 userId 读取；加工后
+    # 文本只含昵称/角色/换算年龄等相对表述，生日与原始隐私字段不落 prompt）
+    PROFILE_INJECT_ENABLED = True
+    # 注入 system prompt 的档案段文本最大长度（字符）：防档案文本膨胀挤占上下文预算
+    PROFILE_INJECT_MAX_CHARS = 600
 
-    # 跨域白名单（前端若独立部署 / 用 Vite 等开发服务器时需在此放行；
-    # 默认由本服务同源托管前端，无需跨域；留空则仅允许本服务自身 origin，切勿用 "*"）
-    CORS_ORIGINS = [f"http://{HOST}:{PORT}", f"http://localhost:{PORT}"]
+    # ============ 服务配置（心理应用含危机内容，默认只绑本机，避免暴露到局域网） ============
+    HOST = os.getenv("HOST", "127.0.0.1")  # 监听地址（env 可覆盖：部署换 IP/域名时
+    # 绑定与下方 CORS 一起改即可，无需改代码）；切勿改为 0.0.0.0 以免暴露到局域网
+    PORT = int(os.getenv("PORT", "8000"))  # 监听端口（env 可覆盖，便于多服务并存测试）
+    # 注：DEBUG/reload 已移除——Phase 1 memory 准入的进程级单实例锁与 uvicorn reload
+    # 的 master+worker 拓扑互斥（worker 重启会撞锁），调试请手动重启（见 api/main.py __main__）。
+
+    # 跨域白名单（默认由本服务同源托管前端，无需跨域；前端独立部署 / 换部署域名时用
+    # env 覆盖，逗号分隔，切勿用 "*"）。留空 = 默认 [http://{HOST}:{PORT}, http://localhost:{PORT}]
+    _CORS_ENV = os.getenv("CORS_ORIGINS", "").strip()
+    if _CORS_ENV:
+        CORS_ORIGINS = [o.strip() for o in _CORS_ENV.split(",") if o.strip()]
+    else:
+        CORS_ORIGINS = [f"http://{HOST}:{PORT}", f"http://localhost:{PORT}"]
+
+    # ============ 健康检查（/api/health）依赖探测 ============
+    # DB 探活（SELECT 1）恒开（廉价）；embedding 上游探测默认关——每次会真实调用一次
+    # embedding API（计费/耗时），需要更完整的上游监控时再开。
+    HEALTH_PROBE_EMBEDDING = os.getenv("HEALTH_PROBE_EMBEDDING", "false").lower() in ("1", "true", "yes")
 
     # ============ 关系型数据库（结构化持久化：会话 / 消息 / 危机审计） ============
     # 双后端：默认 SQLite（单文件、零部署，本地原型）；配置 PG_* 后自动切换 PostgreSQL。
@@ -256,6 +289,12 @@ class Settings:
             )
         else:
             raise ValueError(f"未知 AI_ADMISSION_BACKEND: {cls.AI_ADMISSION_BACKEND}（可选 memory/redis）")
+        # 小程序身份信任模式（fail-closed：只允许已实现的 a=内网直传）
+        if cls.MP_TRUST_MODE not in ("a",):
+            raise ValueError(
+                f"MP_TRUST_MODE={cls.MP_TRUST_MODE} 未实现。当前仅支持 a（内网直传 userId）。"
+                "b（code2session 换 token）/c（服务端中转）属后续迭代。"
+            )
         return True
 
 

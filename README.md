@@ -20,28 +20,73 @@
 
 ---
 
-## 快速开始
+## 快速开始（新环境完整流程）
 
-本机 Python 环境统一使用 conda 环境 **`juliy`**（Python 3.13，依赖已齐）。
+> 按序执行即可在本机跑通。本机开发环境：conda `juliy`（Python 3.13）+ PostgreSQL 16 + pgvector 0.8.2。
+
+### 0. 前置依赖
+
+- Python 3.11+（新环境装包慢可用国内镜像：`pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt`）
+- PostgreSQL（含 pgvector 扩展，见步骤 2）
+
+### 1. 安装依赖
 
 ```powershell
-# 1. 激活环境并安装依赖（新环境才需要）
-conda activate juliy
 pip install -r requirements.txt
-
-# 2. 配置（复制后填入 API Key）
-Copy-Item .env.example .env
-
-# 3. 导入知识库（JSONL 卡片，见「知识库构建」）
-python scripts/import_cards.py "你的知识库.jsonl" --reset
-
-# 4. 启动（本机 8000 若被占用，用 8001）
-python -m uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
+# 本地重排（bge-reranker-v2-m3）依赖 torch，体积大，需单独装：
+#   CPU：  pip install torch
+#   GPU：  pip install torch --index-url https://download.pytorch.org/whl/cu124
 ```
 
-- 接口 / 前端：`http://127.0.0.1:8000`（先注册/登录）
+### 2. 准备 PostgreSQL 数据库
+
+```powershell
+psql -U postgres
+CREATE DATABASE rag_psychology;
+\c rag_psychology
+CREATE EXTENSION IF NOT EXISTS vector;      # pgvector（必装）
+CREATE EXTENSION IF NOT EXISTS pg_trgm;     # 可选（混合检索辅助）
+```
+
+> 业务表、长期记忆检索函数（`fn_search_chat_history`）与 HNSW 索引都由服务首启
+> `init_db()` **自动幂等创建**（含老库轻量迁移），无需手工执行任何 SQL。
+
+### 3. 配置 `.env`
+
+```powershell
+Copy-Item .env.example .env     # Linux: cp .env.example .env
+```
+
+必填三项：**`OPENAI_API_KEY`**（LLM 密钥）、**`JWT_SECRET`**（≥32 字节随机串，
+`python -c "import secrets;print(secrets.token_urlsafe(48))"`）、**`PG_PASSWORD`**。
+其余为可选调参（限流/并发/小程序通道 `MP_API_KEY` 等），见 `.env.example` 注释与下方「配置」。
+
+### 4. 启动
+
+```powershell
+python api/main.py                     # 默认 127.0.0.1:8000
+PORT=8001 python api/main.py           # 8000 被占用时
+```
+
+- ⚠️ 请用 `python api/main.py` 启动：该入口自持 Selector 事件循环（Windows 下
+  psycopg async 必须），并做单实例守卫。**不要**用 `python -m uvicorn --reload`：
+  Windows 会踩 Proactor 事件循环坑，且 reload 的 master+worker 拓扑与并发准入的
+  单实例锁互斥。
+- 首启自动：建表 + 迁移 + 长期记忆函数/HNSW 索引 + 引导账号（`legacy` +
+  管理员 `admin` / `admin123456`，生产用 `.env` 的 `INIT_ADMIN_*` 覆盖）。
+
+### 5. 导入知识库（可选但推荐，让 RAG 有料可检）
+
+```powershell
+python scripts/import_cards.py "你的知识库.jsonl" --reset   # 格式见「知识库构建」
+```
+
+### 6. 验证
+
+- Web 前端：`http://127.0.0.1:8000`（先注册/登录）
+- 健康检查：`http://127.0.0.1:8000/api/health` → `deps.db` 应为 `ok`
 - Swagger：`http://127.0.0.1:8000/docs`
-- 启动日志会打印实际生效的配置（向量库后端 / RAG / 安全检查 / 重排状态）
+- 启动日志会打印实际生效配置（向量库后端 / RAG / 安全检查 / 重排状态，DB 连接串已脱敏）
 
 ---
 
@@ -81,7 +126,7 @@ JWT_SECRET=你的强随机密钥               # ≥32 字节，见下方说明
 
 ## 系统流程
 
-**启动**：`settings.validate()` → `init_db()`（建表 + 轻量迁移 + 引导 legacy/admin 账号）→ 自动命名旧会话 → 条件化预热（仅 RAG 开时加载重排/BM25，仅安全开时 embed 语义锚点）。
+**启动**：`settings.validate()` → `init_db()`（建表 + 轻量迁移 + 长期记忆函数 `fn_search_chat_history` 与 HNSW 索引启动自愈 + 引导 legacy/admin 账号）→ 自动命名旧会话 → 条件化预热（仅 RAG 开时加载重排/BM25，仅安全开时 embed 语义锚点）。
 
 **一次问答**：前端提交 → JWT 鉴权 + 会话越权校验 + IP 限流 → `prepare`（L0 关键词 → L1 语义锚点距离 → 向量 ∪ BM25 召回 → 重排精排）→ `generate`（代码常量提示词 + 长期记忆双通道注入 → LLM 同步/流式）→ 持久化（sessions/messages + 危机命中写 crisis_audit + 每轮写 user_chat_history）→ SSE/JSON 返回。
 
@@ -129,13 +174,49 @@ requirements.txt Python 依赖
 > 除 `/api/auth/register`、`/api/auth/login`、`/api/health` 外**全部接口需要登录**：请求头携带 `Authorization: Bearer <token>`。
 > - 无 token / 无效 / 过期 → `401`；角色不足（普通用户访问 `/api/admin/*`）→ `403`；
 > - 访问他人资源（会话）→ `403`（水平越权防护）；请求体携带的 `user_id` 一律忽略，身份以 token 为准（篡改无效）。
+> - 例外：`/api/mp/*`（微信小程序通道）不依赖 JWT，身份来自请求体 `userId`，见下节「微信小程序通道」。
+
+### 微信小程序通道（/api/mp/*，第二身份通道）
+
+供「已有微信小程序」把本系统当 AI 对话后端接入：小程序自己负责注册登录，仅把既有用户 id 与前端生成的会话 id 传给本服务，**后端不自建账号**（首次出现自动建不可登录的 users 镜像行，会话/记忆/危机审计/家庭档案均挂该 id）。注册与资料页在小程序完成，本服务只收档案。
+
+⚠️ **信任边界（务必遵守）**：mp 通道的身份 = 请求体 `userId`（模式 a 内网直传，`MP_TRUST_MODE=a`）。任何能访问本服务的人可伪造 userId 越权读取他人会话/档案/危机审计 → **只应部署在本机/内网/网关白名单后，切勿直接暴露公网**。公网直连需先实现模式 b（微信 code2session 换 token，配置预留未实现）。
+
+纵深防御：在 `.env` 配置 **`MP_API_KEY`**（非空）后，`/api/mp/*` 全部端点（含 `GET /api/mp/profile`）强制要求 `X-API-Key` 请求头，防止同网段进程/误暴露时直接调用与枚举档案；留空则保持免 key 联调。另：`/api/mp/*` 全命名空间已纳入单 IP 限流中间件（与 `/api/query` 同桶）。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/mp/register` | 注册时写家庭档案：`{userId, profile}`；建镜像号 + 档案 upsert（幂等可重放） |
+| POST | `/api/mp/update` | 资料更新：同 `register` 的 body 与 upsert 语义 |
+| GET | `/api/mp/profile?userId=xxx` | 回读整份档案（camelCase，资料页回显用） |
+| POST | `/api/mp/query` | 非流式对话：`{userId, sessionId, query}` → `{answer, sessionId, sources, safetyNote, isCrisisResponse}` |
+| POST | `/api/mp/query/stream` | SSE 流式对话（body 同上）：`queue → started → sources → token×N → done`；高危直达 `done`；异常发 `error` |
+
+`profile` 结构：
+
+```json
+{
+  "userNickname": "用户1834",
+  "birthday": "1988-05-12",
+  "parent_role": "爸爸",
+  "children": [
+    { "childId": "D972CEEE-B", "childNickname": "为人父", "childBirthDate": "2026-08-04", "gender": "女" }
+  ]
+}
+```
+
+- 落库表：`user_family_profile`（家长主表）+ `user_children`（孩子子表，整份提交全量替换）；
+- 对话时按 userId 读取档案，经 `modules/family_profile.py` **加工后**注入 system prompt：生日换算为「约 X 岁 / X 个月」等相对表述，昵称/角色/孩子性别保留，原始生日不落 prompt，并锚定「档案是对话用户（家长）的背景、不是助手身份」防止角色混淆；
+- 微信小程序消费 SSE：基础库 **≥2.20.2**，`wx.request({ enableChunked: true, responseType: "text" })` + `requestTask.onChunkReceived()` 按 `event:`/`data:` 帧拆包（chunk 为 ArrayBuffer 需 utf-8 解码并缓冲拼帧），收到 `done` 后 `requestTask.abort()`；
+- 会话历史：只发 `sessionId` + 本轮 `query`，服务端按会话从 DB 注入最近 N 轮原文（与 Web 端同机制，跨设备一致）；
+- 说明：`userId` 上限 64 字符；`sessionId` 建议 ≤36（会话主键列宽）；mp 流式暂不提供独立取消接口（断连自动清理在途请求）。
 
 ### 认证
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/api/auth/register` | 注册：`{username, password, display_name?}`；用户名 3-32 位字母/数字/下划线、密码 ≥8 位；冲突 409、不合规 400 |
-| POST | `/api/auth/login` | 登录 → `{access_token, expires_in, user}`；连续失败 5 次锁定 15 分钟（429） |
+| POST | `/api/auth/login` | 登录 → `{access_token, expires_in, user}`；失败锁定双维度：username 5 次锁 15 分钟 + IP 累计 30 次锁 IP（**存在与否同价计数**，不泄露用户名存在性）；失败统一 401 / 429（429） |
 | GET | `/api/auth/me` | 当前用户信息（token 有效性校验） |
 
 初始管理员：首次启动 `users` 表为空时自动创建（`INIT_ADMIN_USERNAME` / `INIT_ADMIN_PASSWORD`，默认 `admin` / `admin123456`，**生产务必在 .env 覆盖**）。历史无归属数据启动时归入不可登录的 `legacy` 账号。
@@ -177,10 +258,12 @@ requirements.txt Python 依赖
 
 ```powershell
 curl http://127.0.0.1:8000/api/health
-# => {"status":"healthy","version":"1.0.0"}
+# => {"status":"healthy","version":"1.0.0","deps":{"db":"ok","embedding":null},"persist":{...}}
 ```
 
-> 只确认服务已启动，不校验知识库是否已导入。返回 healthy 但问答无结果时，先执行导入。
+> `deps.db`：每次请求 `SELECT 1` 探活（失败 → `status=degraded`，仍返回 200 兼容探活脚本）；`deps.embedding`：默认 `null`，设 `HEALTH_PROBE_EMBEDDING=true` 后每次真实 embed 一次 "ping"（计费，默认关）。所有响应携带 `X-Request-ID` 便于跨日志关联单次请求。只确认服务已启动，不校验知识库是否已导入；返回 healthy 但问答无结果时，先执行导入。
+
+> 部署配置（.env 可覆盖，无需改代码）：`HOST`（默认 127.0.0.1）、`PORT`、`CORS_ORIGINS`（逗号分隔，覆盖默认的 `http://{HOST}:{PORT}`/localhost）。
 
 ---
 
@@ -249,6 +332,8 @@ huggingface-cli download BAAI/bge-reranker-v2-m3 --local-dir "data/rerank_models
 
 `MEMORY_ENABLED` 开启时，每轮问答写入 `user_chat_history` 并打**双向量**（query 向量 + query+answer 拼接的 qa 向量，检索主用）；下次提问先用当前问题向量检索该用户相似历史（`MEMORY_TOP_K=5`，`MEMORY_MIN_SIMILARITY=0.3`）注入 system prompt。另有 `MEMORY_RECENT_ROUNDS=6` 的本会话最近 N 轮原文直插，解决指代消解（"那个方法""刚才说的"）。检索成本恒定，不随历史总量线性增长。
 
+> 检索函数 `fn_search_chat_history` 与 2 个 HNSW 索引 + user_id 索引由 `init_db()` 启动时**幂等自愈创建**（`db/__init__.py::_ensure_user_chat_history_sql`），维度取 `settings.VECTOR_DIMENSION`，新库无需手工执行 SQL。历史 DDL `scripts/user_chat_history.sql` 已恢复，仅作参考/手工兜底（曾被 858a30f「4.1精简版」误删导致新库记忆静默失效）。
+
 ---
 
 ## 安全与危机干预
@@ -282,17 +367,19 @@ embedding 复用检索阶段那次 API 调用（进程内 LRU 缓存），**不�
 - **向量库**：只负责语义检索（pgvector，与关系库同库）；
 - **关系库**：只负责结构化留痕——用户 / 会话 / 消息 / 危机审计 / 长期记忆（SQLAlchemy ORM，统一走 PostgreSQL）。系统提示词**不存数据库**，见「系统提示词」章节。
 
-### 表结构（业务表 5 张）
+### 表结构（业务表 7 张）
 
 | 表 | 关键字段 | 说明 |
 |---|---|---|
-| `users` | `id`、`username`(唯一)、`password_hash`(bcrypt)、`role`(user/admin)、`is_active` | 登录账号 + RBAC |
+| `users` | `id`、`username`(唯一)、`password_hash`(bcrypt)、`role`(user/admin)、`is_active` | 登录账号 + RBAC；小程序通道为外部 userId 的镜像行（不可登录，username=`mp_<sha1>`），`id` 列宽 64 |
 | `sessions` | `id`、`user_id`(索引)、`title`、`created_at`、`updated_at` | 一次完整对话；messages 级联删除 |
 | `messages` | `id`(自增)、`session_id`(FK, CASCADE, 索引)、`role`(human/ai)、`content` | 单条消息 |
 | `crisis_audit` | `user_id`、`session_id`、`crisis_level`、`keywords_found`(JSON)、`question`、`response`、`detect_method`、`confidence` | 危机命中审计（合规留痕） |
 | `user_chat_history` | `user_id`(索引)、`query`、`answer`、`embedding`(Vector)、`qa_embedding`(Vector) | 长期记忆（双向量） |
+| `user_family_profile` | `user_id`(PK)、`user_nickname`、`birthday`(Date)、`parent_role`、`created_at`、`updated_at` | 小程序通道家庭档案主表（1 用户 1 行） |
+| `user_children` | `user_id`(FK, CASCADE) + `child_id`(复合 PK)、`child_nickname`、`child_birth_date`(Date)、`gender` | 家庭档案的孩子子表（register/update 整份全量替换） |
 
-> 约定：库内 `Message.role` 只存 `human`/`ai`；前端显示用 `user`/`assistant`，映射在加载/导入边界处理。`QueryRequest.messages[].role` 兼容四种取值，最后一条须为用户问题。`crisis_audit.keywords_found` 在库中为 JSON 编码字符串。
+> 约定：库内 `Message.role` 只存 `human`/`ai`；前端显示用 `user`/`assistant`，映射在加载/导入边界处理。`QueryRequest.messages[].role` 兼容四种取值，最后一条须为用户问题。`crisis_audit.keywords_found` 在库中为 JSON 编码字符串。老库 `users.id` / `sessions.user_id` / `crisis_audit.user_id` 由启动迁移自动扩到 `VARCHAR(64)`（幂等，PG only）。
 
 ### 常用运维（PostgreSQL）
 

@@ -23,9 +23,12 @@ from .deps import get_current_user
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-# 登录失败记录：username -> deque[(ts)]，窗口内失败超限则锁定
+# 登录失败记录：username -> deque[(ts)]，窗口内失败超限则锁定账号
+# 注意：存在与否的 username **同代价计数**（消除「429 只出现在存在用户」的存在性探针）
 _login_fails: dict[str, deque] = defaultdict(deque)
-# 登录请求整体限流：IP -> deque（防止单 IP 爆破）
+# IP 维度失败累计：同 IP 换用户名逐个试时累计超限 → 锁 IP（兜 username 锁的盲区）
+_login_ip_fails: dict[str, deque] = defaultdict(deque)
+# 登录请求整体限流（频率）：IP -> deque（防止单 IP 爆破）
 _login_ip: dict[str, deque] = defaultdict(deque)
 # 注册请求限流：IP -> deque（register 此前无限流，可被批量注册刷 bcrypt/DB）
 _register_ip: dict[str, deque] = defaultdict(deque)
@@ -45,10 +48,10 @@ def _sweep_empty_buckets() -> None:
     now = time.time()
     if now - _last_sweep < 600.0:
         return
-    if len(_login_fails) + len(_login_ip) + len(_register_ip) < 500:
+    if len(_login_fails) + len(_login_ip_fails) + len(_login_ip) + len(_register_ip) < 500:
         return
     _last_sweep = now
-    for store in (_login_fails, _login_ip, _register_ip):
+    for store in (_login_fails, _login_ip_fails, _login_ip, _register_ip):
         for key in [k for k, v in store.items() if not v]:
             del store[key]
 
@@ -58,12 +61,28 @@ def _is_locked(username: str) -> bool:
     return len(_login_fails[username]) >= settings.LOGIN_MAX_FAILS
 
 
-def _record_fail(username: str) -> None:
-    _login_fails[username].append(time.time())
+def _ip_locked(ip: str) -> bool:
+    _prune(_login_ip_fails[ip], settings.LOGIN_LOCK_SECONDS)
+    return len(_login_ip_fails[ip]) >= settings.LOGIN_IP_FAIL_MAX
 
 
-def _clear_fails(username: str) -> None:
+def _record_fail(username: str, ip: str) -> None:
+    """认证失败计数（username 存在与否**同代价**，防止响应差异泄露存在性）。
+
+    - username 桶：超过 LOGIN_USER_BUCKET_MAX 后不再为陌生 username 建桶
+      （攻击者用随机不存在用户名灌桶只占 5 次/名，防桶集合无限膨胀）；已存在的
+      桶继续累计。
+    - IP 桶：无条件累计（分布式换用户名探测的兜底维度）。
+    """
+    now = time.time()
+    if username in _login_fails or len(_login_fails) < settings.LOGIN_USER_BUCKET_MAX:
+        _login_fails[username].append(now)
+    _login_ip_fails[ip].append(now)
+
+
+def _clear_fails(username: str, ip: str) -> None:
     _login_fails[username].clear()
+    _login_ip_fails[ip].clear()
 
 
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9_]{3,32}$")
@@ -147,30 +166,39 @@ def register(body: RegisterBody, request: Request):
 
 @router.post("/login")
 def login(body: LoginBody, request: Request):
-    """登录：校验用户名密码 → 签发 JWT。失败统一 401（不暴露用户名是否存在）。"""
+    """登录：校验用户名密码 → 签发 JWT。失败统一 401 文案（不泄露用户名是否存在）。
+
+    锁定语义（2026-09-07 修正）：认证失败对「存在与否的用户名」同代价计数，
+    不存在用户连续失败同样触发 429 —— 消除「只对存在用户 429」的存在性探针；
+    另加 IP 维度累计失败锁（换用户名逐个试的兜底）。旧实现只在用户存在时计数，
+    反而让攻击者能对已知用户名（如 admin）盲打 5 次错误密码直接锁号 15 分钟
+    （认证 DoS）——本改动不消除该 tradeoff（彻底防需验证码/风控），但单 IP
+    攻击 30 次即锁 IP，明显抬高成本。
+    """
     username = body.username.strip()
-    # IP 级限流（简单内存，多进程部署需共享存储）
+    # IP 级请求频率限流（简单内存，多进程部署需共享存储）
     ip = request.client.host if request.client else "unknown"
     _prune(_login_ip[ip], settings.RATE_LIMIT_SECONDS)
     if len(_login_ip[ip]) >= settings.LOGIN_IP_MAX_REQUESTS:
         raise HTTPException(status_code=429, detail="登录尝试过于频繁，请稍后再试")
     _login_ip[ip].append(time.time())
 
+    # IP 累计失败锁（换用户名逐个试的兜底）→ username 锁（存在与否同价）
+    if _ip_locked(ip):
+        raise HTTPException(status_code=429, detail="登录尝试过于频繁，请稍后再试")
     if _is_locked(username):
-        raise HTTPException(status_code=429, detail="失败次数过多，账号已临时锁定，请 15 分钟后再试")
+        raise HTTPException(status_code=429, detail="失败次数过多，请稍后再试")
 
     with crud.get_db() as db:
         user = crud.get_user_by_username(db, username)
         ok = user is not None and user.is_active and verify_password(body.password, user.password_hash)
         if ok:
-            _clear_fails(username)
+            _clear_fails(username, ip)
             _sweep_empty_buckets()
             return _make_token(user)
-    if user is not None:
-        # 仅当账号存在且密码错误时计数：若对不存在的用户名也记失败，攻击者可对
-        # 任意已知用户名盲打 LOGIN_MAX_FAILS 次错误密码，把真实用户锁定
-        # LOGIN_LOCK_SECONDS（认证 DoS，无需知道密码）。
-        _record_fail(username)
+    # 失败（含用户不存在）：username/IP 双维度同价计数。若用户不存在也计数，
+    # 攻击者拿随机名灌桶会占内存 —— 由 _record_fail 的桶数量上限 LOGIN_USER_BUCKET_MAX 兜底。
+    _record_fail(username, ip)
     _sweep_empty_buckets()
     raise HTTPException(status_code=401, detail="用户名或密码错误")
 
