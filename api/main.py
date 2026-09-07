@@ -69,11 +69,24 @@ from api.auth import router as auth_router
 from api.deps import get_current_user, get_db_session, require_admin
 from sqlalchemy.ext.asyncio import AsyncSession
 import uuid
+from contextlib import asynccontextmanager
+
+# FastAPI 已弃用 @app.on_event，推荐统一用 lifespan 上下文管理器管理启动/关闭。
+# 启动/关闭逻辑体量较大，保留在下方与路由同区（_startup_routine / _shutdown_routine）；
+# lifespan 只在应用启动/关闭那一刻被调用，彼时模块已完整加载，前向引用是安全的。
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """应用生命周期：启动时执行初始化例程，关闭时优雅停止后台 Worker。"""
+    await _startup_routine()
+    yield
+    await _shutdown_routine()
+
 
 app = FastAPI(
     title="青少年心理RAG系统API",
     description="基于RAG的6-18岁青少年心理咨询系统（含登录鉴权与危机干预）",
     version="1.1.0",
+    lifespan=lifespan,
 )
 
 # 认证路由（/api/auth/register、/api/auth/login、/api/auth/me）
@@ -953,9 +966,8 @@ async def admin_list_crisis_audits(
     ]
 
 
-@app.on_event("startup")
-async def startup_event():
-    """启动时验证配置、建表、引导账号"""
+async def _startup_routine():
+    """启动例程：验证配置、建表、引导账号（由 lifespan 于应用启动时调用）。"""
     settings.validate()
     # Phase 1 memory 准入：单实例守卫（阻断 uvicorn --workers / 重复启动的第二个实例）
     _acquire_single_instance_lock()
@@ -1023,9 +1035,8 @@ async def startup_event():
     print("=" * 50)
 
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    """关闭时优雅停止后台 Worker。"""
+async def _shutdown_routine():
+    """关闭例程：优雅停止后台 Worker（由 lifespan 于应用关闭时调用）。"""
     try:
         await bg_queue.shutdown()
     except Exception as e:
