@@ -55,9 +55,12 @@ from modules.family_profile import format_profile_for_prompt
 from modules.gateway import (
     _ADMISSION_RETRY_AFTER,
     admission_json,
+    classify_upstream_error,
     enqueue_persist,
     sse,
     sse_queue_event,
+    upstream_json,
+    upstream_sse_payload,
 )
 from modules import rag_system
 
@@ -358,8 +361,20 @@ async def mp_query(
     except ValueError as e:
         terminal = TerminalReason.FAILED.value
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception:
+    except Exception as e:  # noqa: BLE001
+        # 上游容量类错误 → 503 背压（可退避重试），与压测口径的「正确拒绝」一致；
+        # 其余异常才是服务端缺陷 → 500，并且必须打日志（旧实现此处不打日志，
+        # 导致线上那些 500 完全没有堆栈可查）。
+        code = classify_upstream_error(e)
+        if code:
+            terminal = TerminalReason.UPSTREAM_LIMITED.value
+            logger.warning(
+                "[api/mp][query] 上游背压（非服务缺陷）[rid=%s] %s: %s",
+                request_id, code, e,
+            )
+            return upstream_json(code)
         terminal = TerminalReason.FAILED.value
+        logger.exception("[api/mp][query] 未预期异常 [rid=%s]", request_id)
         raise HTTPException(status_code=500, detail="内部处理失败，请稍后重试。")
     finally:
         await admission.release(ticket, terminal=terminal)
@@ -546,14 +561,25 @@ async def mp_query_stream(
                 "sessionId": session_id,
                 "request_id": request_id,
             })
-        except Exception as e:
-            terminal = TerminalReason.FAILED.value
-            logger.exception("[api/mp][query/stream] 流式生成异常 [rid=%s]: %s",
-                             getattr(stream_request.state, "request_id", "-"), e)
-            yield sse("error", {
-                "detail": f"生成失败（{type(e).__name__}），请稍后重试。",
-                "error_type": type(e).__name__,
-            })
+        except Exception as e:  # noqa: BLE001
+            code = classify_upstream_error(e)
+            if code:
+                # 上游背压：HTTP 头已发出（无法改状态码），改用带 code 的 SSE error 终态，
+                # 让客户端与压测脚本能把「退避重试」与「报障」分开。
+                terminal = TerminalReason.UPSTREAM_LIMITED.value
+                logger.warning(
+                    "[api/mp][query/stream] 上游背压（非服务缺陷）[rid=%s] %s: %s",
+                    getattr(stream_request.state, "request_id", "-"), code, e,
+                )
+                yield sse("error", upstream_sse_payload(e, code))
+            else:
+                terminal = TerminalReason.FAILED.value
+                logger.exception("[api/mp][query/stream] 流式生成异常 [rid=%s]: %s",
+                                 getattr(stream_request.state, "request_id", "-"), e)
+                yield sse("error", {
+                    "detail": f"生成失败（{type(e).__name__}），请稍后重试。",
+                    "error_type": type(e).__name__,
+                })
         finally:
             await admission.release(ticket, terminal=terminal)
             try:

@@ -135,8 +135,9 @@ class UserFamilyProfile(Base):
     """用户家庭档案主表（微信小程序通道 /api/mp/register|update 落库，1 用户 1 行）。
 
     存储家长本人信息（昵称/生日/家长角色）+ 若干孩子（user_children 子表）。
-    每次 register/update 以「整份档案」幂等 upsert：主行 ON CONFLICT 覆盖，
-    children 全量替换（先删后插，事务内，见 crud_async.upsert_family_profile）。
+    每次 register/update 以「整份档案」幂等 upsert：主行 INSERT ... ON CONFLICT DO UPDATE，
+    children 先 upsert 提交项、再删除不在提交列表里的（合起来 = 全量替换，事务内，
+    见 crud_async.upsert_family_profile）。不用「先删后插」是因为并发下会撞唯一索引。
 
     敏感个人信息（家长生日、孩子生日/性别）：仅用于对话个性化与审计留痕。
     注入 LLM prompt 前必须经 modules/family_profile.py 加工（生日换算为年龄等

@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from sqlalchemy import select, desc, func, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from . import SessionLocal
 from .models import User, Session, Message, CrisisAudit, UserChatHistory
@@ -119,15 +120,31 @@ def _auto_title(db, session_id: str, fallback: str) -> str:
 
 
 def ensure_session(db, session_id: str, title: str | None = None, user_id: str | None = None) -> Session:
-    """确保会话行存在（不存在则按 id 创建，归属 user_id）。"""
+    """确保会话行存在（不存在则按 id 创建，归属 user_id）。
+
+    并发安全（2026-09-10 修）：旧实现是 `get → 判空 → add → flush`，属 TOCTOU。
+    session_id 是**客户端传入**的（前端 `session-<ts>` / 小程序 `sess_<userId>`），
+    两个落库 worker 同时处理同一个新 id 时会双双判定「不存在」，后者撞
+    `sessions.id` 主键 → IntegrityError 让整轮落库失败（静默丢会话，比 500 更隐蔽）。
+    目前被 `AI_BG_WORKERS=1` 偶然掩盖——把 worker 数调大就会复现。
+    现在把幂等下沉到 DB：单条 `INSERT ... ON CONFLICT (id) DO NOTHING`，
+    唯一性由主键在单条语句内裁决，不再有「先查后写」窗口。
+    """
+    db.execute(
+        pg_insert(Session)
+        .values(
+            id=session_id,
+            title=(title or "新会话")[:255],
+            user_id=user_id,
+        )
+        .on_conflict_do_nothing(index_elements=["id"])
+    )
+    db.flush()
     sess = db.get(Session, session_id)
-    if sess is None:
-        sess = Session(id=session_id, title=(title or "新会话")[:255], user_id=user_id)
-        db.add(sess)
-        db.flush()
-    elif user_id and not sess.user_id:
+    if sess is not None and user_id and not sess.user_id:
         # 历史遗留空归属行：首次被当前用户访问时补归属（防止共享会话串数据）
         sess.user_id = user_id
+        db.flush()
     return sess
 
 

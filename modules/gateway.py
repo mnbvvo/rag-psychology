@@ -37,6 +37,74 @@ def get_persist_metrics() -> dict:
 _ADMISSION_RETRY_AFTER = str(max(1, min(60, int(settings.AI_QUEUE_WAIT_TIMEOUT_SECONDS))))
 
 
+# ---------------- 上游 LLM 网关异常分类（背压 vs 服务缺陷） ----------------
+# 2026-09-10 实测背景：上游百炼限流（type/code = limit_requests）原先被端点
+# `except Exception → 500` 一律吞成「内部处理失败」，导致
+#   ① 压测把它判成「非 503 的 5xx」一票否决 → 把「模型侧容量不足」误记成服务缺陷；
+#   ② 非流式路径连日志都不打，现场无法归因；
+#   ③ 流式与非流式降级行为不一致（SSE error vs 500）。
+# 现在统一：上游容量类错误 → 503 + Retry-After（503 是本项目唯一允许的非 2xx 5xx，
+# 也是压测口径里的「正确拒绝」）；4xx 类（密钥/参数错）仍按 500 处理，
+# 因为那属于必须修掉的配置缺陷，不该被隐藏成背压。
+AI_UPSTREAM_LIMITED = "AI_UPSTREAM_LIMITED"          # 上游 429：请求速率超限
+AI_UPSTREAM_UNAVAILABLE = "AI_UPSTREAM_UNAVAILABLE"  # 上游超时/连接失败/5xx
+_UPSTREAM_RETRY_AFTER = "5"                          # 秒；上游限流窗口通常秒级
+
+_UPSTREAM_DETAIL = {
+    AI_UPSTREAM_LIMITED: "上游模型请求频率超限，请稍后重试",
+    AI_UPSTREAM_UNAVAILABLE: "上游模型暂不可用，请稍后重试",
+}
+
+
+def classify_upstream_error(exc: BaseException) -> Optional[str]:
+    """上游容量类错误 → 背压错误码；不是上游容量问题 → None（调用方按 500 处理）。
+
+    openai 的异常层级：RateLimitError / APITimeoutError / APIConnectionError 都是
+    APIError 子类，且 RateLimitError ⊂ APIStatusError，所以判定顺序不能反。
+    """
+    try:
+        from openai import (
+            APIConnectionError,
+            APIStatusError,
+            APITimeoutError,
+            RateLimitError,
+        )
+    except Exception:  # noqa: BLE001 —— 极端环境下 openai 不可用时退化为「非背压」
+        return None
+    if isinstance(exc, RateLimitError):
+        return AI_UPSTREAM_LIMITED
+    if isinstance(exc, (APITimeoutError, APIConnectionError)):
+        return AI_UPSTREAM_UNAVAILABLE
+    if isinstance(exc, APIStatusError) and int(getattr(exc, "status_code", 0) or 0) >= 500:
+        return AI_UPSTREAM_UNAVAILABLE
+    return None
+
+
+def upstream_json(code: str) -> "JSONResponse":
+    """上游背压的统一响应体：503 + Retry-After + {detail, code}。"""
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        status_code=503,
+        content={"detail": _UPSTREAM_DETAIL.get(code, "上游模型暂不可用，请稍后重试"), "code": code},
+        headers={"Retry-After": _UPSTREAM_RETRY_AFTER},
+    )
+
+
+def upstream_sse_payload(exc: BaseException, code: str) -> dict:
+    """上游背压的 SSE error 事件体。
+
+    带 code + retry_after，让客户端（与压测脚本）能把「背压」和「真故障」分开：
+    背压应退避重试，真故障才该报障。
+    """
+    return {
+        "detail": _UPSTREAM_DETAIL.get(code, "上游模型暂不可用，请稍后重试"),
+        "error_type": type(exc).__name__,
+        "code": code,
+        "retry_after": _UPSTREAM_RETRY_AFTER,
+    }
+
+
 def admission_json(status: int, detail: str, code: str, headers: dict = None) -> "JSONResponse":
     """准入类错误的统一响应体：{detail, code} + 可选头（如 Retry-After）。
 

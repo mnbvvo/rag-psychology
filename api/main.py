@@ -59,12 +59,15 @@ from db import init_db, crud, crud_async
 from modules.gateway import (
     _ADMISSION_RETRY_AFTER,
     admission_json as _admission_json,
+    classify_upstream_error,
     sse as _sse,
     sse_queue_event as _sse_queue_event,
     enqueue_persist as _enqueue_persist,
     flush_db_turn_sync as _flush_db_turn_sync,
     flush_memory_sync as _flush_memory_sync,
     get_persist_metrics,
+    upstream_json as _upstream_json,
+    upstream_sse_payload as _upstream_sse_payload,
 )
 from api.auth import router as auth_router
 from api.deps import get_current_user, get_db_session, require_admin
@@ -228,9 +231,15 @@ async def rate_limit_middleware(request: Request, call_next):
         while bucket and bucket[0] <= now - window:
             bucket.popleft()
         if len(bucket) >= limit:
+            # 与 admission 的 429 对齐契约（2026-09-10）：同一个状态码必须同样给出
+            # Retry-After，否则客户端只能瞎重试——旧实现只回文本、不带任何头。
+            # 剩余等待 = 最早那条记录滑出窗口所需时间（+1 向上取整，宁多不少）。
+            oldest = bucket[0] if bucket else now
+            retry_after = max(1, int(oldest + window - now) + 1)
             return JSONResponse(
                 status_code=429,
                 content={"detail": "请求过于频繁，请稍后再试。"},
+                headers={"Retry-After": str(retry_after)},
             )
         bucket.append(now)
         # 桶键回收：defaultdict 的键只 prune 不删除，公网暴露后键数会随来源 IP 无限
@@ -462,9 +471,16 @@ async def query(
         # 参数校验类错误返回 400，便于前端定位
         terminal = TerminalReason.FAILED.value
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception:
+    except Exception as e:  # noqa: BLE001
+        # 上游容量类 → 503 背压；其余 → 500 并打日志（旧实现此处不打日志）
+        code = classify_upstream_error(e)
+        if code:
+            terminal = TerminalReason.UPSTREAM_LIMITED.value
+            logger.warning("[query] 上游背压（非服务缺陷）[rid=%s] %s: %s", request_id, code, e)
+            return _upstream_json(code)
         # 不把内部异常细节（路径/堆栈）回传给客户端
         terminal = TerminalReason.FAILED.value
+        logger.exception("[query] 未预期异常 [rid=%s]", request_id)
         raise HTTPException(status_code=500, detail="内部处理失败，请稍后重试。")
     finally:
         # 无论成功/失败/取消，真实退出后释放槽位（幂等；防超卖）
@@ -702,14 +718,22 @@ async def query_stream(
                 "session_id": session_id,
                 "request_id": request_id,
             })
-        except Exception as e:
-            # 记录完整异常到服务端日志；SSE error 事件只带异常类型（不暴露堆栈/路径）
-            terminal = TerminalReason.FAILED.value
-            logger.exception("[query/stream] 流式生成异常 [rid=%s]", getattr(stream_request.state, "request_id", "-"))
-            yield _sse("error", {
-                "detail": f"生成失败（{type(e).__name__}），请稍后重试。",
-                "error_type": type(e).__name__,
-            })
+        except Exception as e:  # noqa: BLE001
+            code = classify_upstream_error(e)
+            if code:
+                # 上游背压：头已发出无法改状态码，用带 code 的 SSE error 终态表达可退避
+                terminal = TerminalReason.UPSTREAM_LIMITED.value
+                logger.warning("[query/stream] 上游背压（非服务缺陷）[rid=%s] %s: %s",
+                               getattr(stream_request.state, "request_id", "-"), code, e)
+                yield _sse("error", _upstream_sse_payload(e, code))
+            else:
+                # 记录完整异常到服务端日志；SSE error 事件只带异常类型（不暴露堆栈/路径）
+                terminal = TerminalReason.FAILED.value
+                logger.exception("[query/stream] 流式生成异常 [rid=%s]", getattr(stream_request.state, "request_id", "-"))
+                yield _sse("error", {
+                    "detail": f"生成失败（{type(e).__name__}），请稍后重试。",
+                    "error_type": type(e).__name__,
+                })
         finally:
             # 工作真实退出后才释放活跃槽位（幂等；断连/取消/异常均覆盖）
             await admission.release(ticket, terminal=terminal)

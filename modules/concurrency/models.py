@@ -52,6 +52,9 @@ class TerminalReason(str, Enum):
     CANCELLED = "cancelled"
     DISCONNECTED = "disconnected"
     QUEUE_TIMEOUT = "queue_timeout"
+    # 2026-09-10：上游 LLM 网关限流/不可用（背压）。与 FAILED 分开统计，
+    # 否则「模型侧容量不足」会被计入服务端失败，掩盖真实缺陷。
+    UPSTREAM_LIMITED = "upstream_limited"
 
 
 # ---------------- Ticket ----------------

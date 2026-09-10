@@ -10,7 +10,7 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from modules.vector_store import PsychologyVectorStore
-from modules.prompt_store import build_system_prompt
+from modules.prompt_store import build_system_prompt, OUTPUT_LENGTH_RULE
 from config.settings import settings
 
 
@@ -44,7 +44,7 @@ class PsychologyRAG:
             temperature=settings.CHAT_TEMPERATURE,
             max_tokens=4096,
             timeout=settings.LLM_TIMEOUT_SECONDS,  # 参数化：须 > 排队超时（settings.validate 强制）
-            max_retries=settings.LLM_MAX_RETRIES,  # 瞬时网络/限流错误自动重试
+            max_retries=settings.LLM_MAX_RETRIES,  # 默认 0：不重试 429（见 settings 注释）
         )
         # 流式实例：保留 enable_thinking（思考/推理模式开关，仅流式接口支持）
         self.llm_stream = ChatOpenAI(
@@ -223,6 +223,13 @@ class PsychologyRAG:
         if profile_text:
             system_prompt = f"{system_prompt}\n\n{profile_text}"
 
+        # 注意：OUTPUT_LENGTH_RULE（输出长度硬约束）**不拼在这里**。
+        # 2026-09-10 实测发现：拼在 system 末段只解决了「被 ACTIVE_PROMPT 正文埋没」
+        # 的问题，但整个请求里 system 之后还压着最多 MEMORY_RECENT_ROUNDS 轮历史
+        # （12 条消息）与当前问题——规则落在上下文约 30%~40% 位置，且历史全是模型
+        # 自己写过的长回答，锚定效应足以抵消一条系统指令。
+        # 现改为在历史之后、当前问题之前插入独立 system 消息，见下方。
+
         prompt_messages = [("system", system_prompt)]
         if settings.MEMORY_RECENT_ROUNDS > 0 and messages:
             # messages 的最后一条是当前问题（_normalize 保证），跳过它取历史；
@@ -254,6 +261,18 @@ class PsychologyRAG:
                 elif role in ("assistant", "ai"):
                     prompt_messages.append(("assistant", content))
                 # 其他 role 忽略（防御：不注入未知角色）
+
+        # 输出长度硬约束（2026-09-10）：插在历史之后、当前问题之前，让它成为整个
+        # 请求中最后一条系统指令，不受历史长回答的锚定稀释。
+        # 仅约束措辞，不涉及截断（max_tokens 仍为 4096）。
+        # 首轮（无历史）特殊处理：此时没有可插入的"末尾"，直接并入唯一那条 system，
+        # 避免发出连续两条 system 消息（部分兼容网关对非首位/连续 system 处理不一致）。
+        # 注：若哪天实测该独立 system 被网关忽略，退回「追加到当前问题末尾」的写法。
+        if len(prompt_messages) == 1:
+            prompt_messages[0] = ("system", f"{system_prompt}\n\n{OUTPUT_LENGTH_RULE}")
+        else:
+            prompt_messages.append(("system", OUTPUT_LENGTH_RULE))
+
         prompt_messages.append(("human", question))
         return prompt_messages
 

@@ -205,33 +205,90 @@ async def upsert_family_profile(
     birthday: date | None,
     parent_role: str,
     children: list[dict],
-) -> UserFamilyProfile:
-    """整份档案幂等 upsert：主行覆盖 + children 全量替换（事务内，由请求级 session 提交）。
+) -> None:
+    """整份档案幂等 upsert：主行原子 upsert + children 全量替换（事务内，由请求级 session 提交）。
 
     children 每项含 child_id/child_nickname/child_birth_date/gender（api 层已完成
     字段清洗与截断），此处仅落库。全量替换符合小程序"资料编辑页整份提交"的形态。
+
+    并发安全（2026-09-10 修复，压测实测 20 并发同 userId 时约 7% 请求 500）：
+    旧实现是「SELECT 判空 → INSERT/赋值」再「DELETE 全删 → 逐条 INSERT」，有两处
+    TOCTOU 窗口 ——「判空」与「写入」之间不是原子的，唯一性由唯一索引物理强制而非
+    可见性判断，故两个并发事务都基于「不存在」的过期判断各自去写，后者必撞：
+      ① 同时判「父行不存在」→ 各自 INSERT → 撞 user_family_profile_pkey；
+      ② 同时 DELETE 再 INSERT 同一 (user_id, child_id) → 撞 user_children_pkey。
+    现在统一改为 PG 原生 INSERT ... ON CONFLICT ... DO UPDATE：唯一性在**单条语句内**
+    由索引裁决，冲突直接改写成 UPDATE，不存在「先查后写」的窗口，无需重试/应用层锁。
+
+    取舍：并发压同一 user_id 时这些语句按行锁串行化（不再报错，但会排队）；事务很短
+    可接受。若两个事务提交**不同**的孩子集合，最终为「后提交者可见的部分」，属
+    并发编辑的 last-write-wins 语义（原实现会直接 500，故为改善）。
     """
-    row = await db.get(UserFamilyProfile, user_id)
-    if row is None:
-        row = UserFamilyProfile(user_id=user_id)
-        db.add(row)
-    row.user_nickname = (user_nickname or "")[:64]
-    row.birthday = birthday
-    row.parent_role = (parent_role or "")[:20]
-    # children 全量替换：先删后插（同事务）
-    await db.execute(delete(UserChild).where(UserChild.user_id == user_id))
-    for c in children:
-        db.add(
-            UserChild(
-                user_id=user_id,
-                child_id=(c.get("child_id") or "")[:64],
-                child_nickname=(c.get("child_nickname") or "")[:64],
-                child_birth_date=c.get("child_birth_date"),
-                gender=(c.get("gender") or "")[:8],
+    # 同一 payload 内 childId 重复会触发 PG 的「ON CONFLICT DO UPDATE 不能影响同一行两次」，
+    # 故先按 childId 去重（后出现者胜、保持首次出现的位置）。
+    dedup: dict[str, dict] = {}
+    for c in children or []:
+        dedup[(c.get("child_id") or "")[:64]] = c
+    keep_ids = list(dedup.keys())
+
+    # ① 主行：单条原子 upsert（created_at 只在插入时写，冲突时不覆盖）
+    parent_stmt = pg_insert(UserFamilyProfile).values(
+        user_id=user_id,
+        user_nickname=(user_nickname or "")[:64],
+        birthday=birthday,
+        parent_role=(parent_role or "")[:20],
+        created_at=func.now(),
+        updated_at=func.now(),
+    )
+    await db.execute(
+        parent_stmt.on_conflict_do_update(
+            index_elements=[UserFamilyProfile.user_id],
+            set_={
+                "user_nickname": parent_stmt.excluded.user_nickname,
+                "birthday": parent_stmt.excluded.birthday,
+                "parent_role": parent_stmt.excluded.parent_role,
+                "updated_at": func.now(),
+            },
+        )
+    )
+
+    # ② 子表：先 upsert 本次提交的孩子（冲突改 UPDATE），再删掉不在提交列表里的
+    #    —— 合起来等价于「整份全量替换」，且全程无「先查后写」窗口。
+    if dedup:
+        child_stmt = pg_insert(UserChild).values(
+            [
+                {
+                    "user_id": user_id,
+                    "child_id": cid,
+                    "child_nickname": (c.get("child_nickname") or "")[:64],
+                    "child_birth_date": c.get("child_birth_date"),
+                    "gender": (c.get("gender") or "")[:8],
+                    "created_at": func.now(),
+                    "updated_at": func.now(),
+                }
+                for cid, c in dedup.items()
+            ]
+        )
+        await db.execute(
+            child_stmt.on_conflict_do_update(
+                index_elements=[UserChild.user_id, UserChild.child_id],
+                set_={
+                    "child_nickname": child_stmt.excluded.child_nickname,
+                    "child_birth_date": child_stmt.excluded.child_birth_date,
+                    "gender": child_stmt.excluded.gender,
+                    "updated_at": func.now(),
+                },
             )
         )
+        await db.execute(
+            delete(UserChild).where(
+                UserChild.user_id == user_id,
+                UserChild.child_id.notin_(keep_ids),
+            )
+        )
+    else:
+        await db.execute(delete(UserChild).where(UserChild.user_id == user_id))
     await db.flush()
-    return row
 
 
 async def get_family_profile(db: AsyncSession, user_id: str) -> dict | None:

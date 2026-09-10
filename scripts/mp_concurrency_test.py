@@ -51,6 +51,7 @@ class CallResult:
     status: int
     ok: bool                 # 业务成功
     rejected: bool = False   # 正确拒绝（409/429/503 中的契约性拒绝）
+    upstream_limited: bool = False  # 其中属「上游模型背压」（503/SSE error + AI_UPSTREAM_*）
     error_type: str = ""
     ttft_ms: float = 0.0
     total_ms: float = 0.0
@@ -81,12 +82,14 @@ class Metrics:
         for r in self.results:
             e = by_ep.setdefault(
                 r.endpoint,
-                {"total": 0, "ok": 0, "fail": 0, "rejected": 0, "status": {}, "total_ms": [], "ttft_ms": []},
+                {"total": 0, "ok": 0, "fail": 0, "rejected": 0, "upstream": 0,
+                 "status": {}, "total_ms": [], "ttft_ms": []},
             )
             e["total"] += 1
             e["ok"] += int(r.ok)
             e["fail"] += int(not r.ok and not r.rejected)
             e["rejected"] += int(r.rejected)
+            e["upstream"] += int(r.upstream_limited)
             e["status"][str(r.status)] = e["status"].get(str(r.status), 0) + 1
             if r.total_ms:
                 e["total_ms"].append(r.total_ms)
@@ -94,7 +97,7 @@ class Metrics:
                 e["ttft_ms"].append(r.ttft_ms)
 
         out: dict[str, Any] = {"endpoints": {}, "overall": {}}
-        all_ok = all_fail = all_rej = 0
+        all_ok = all_fail = all_rej = all_up = 0
         all_total_ms: list[float] = []
         all_ttft: list[float] = []
         for name, e in by_ep.items():
@@ -104,6 +107,7 @@ class Metrics:
                 "ok": e["ok"],
                 "fail": e["fail"],
                 "rejected": e["rejected"],
+                "upstream_limited": e["upstream"],
                 "status_dist": e["status"],
                 "success_rate": round(e["ok"] / admitted * 100, 2) if admitted else 0.0,
                 "total_ms": {
@@ -122,6 +126,7 @@ class Metrics:
             all_ok += e["ok"]
             all_fail += e["fail"]
             all_rej += e["rejected"]
+            all_up += e["upstream"]
             all_total_ms += e["total_ms"]
             all_ttft += e["ttft_ms"]
 
@@ -131,6 +136,7 @@ class Metrics:
             "ok": all_ok,
             "fail": all_fail,
             "rejected": all_rej,
+            "upstream_limited": all_up,
             "success_rate": round(all_ok / admitted_all * 100, 2) if admitted_all else 0.0,
             "total_ms": {
                 "p50": self.pct(all_total_ms, 50),
@@ -181,6 +187,30 @@ def build_users(prefix: str, count: int) -> list[dict]:
             }
         )
     return users
+
+
+def resolve_user_pool(explicit: int, auto_floor: int) -> int:
+    """userId 池大小：显式 --users 原样生效；未指定（0）时取 max(auto_floor, 50)。
+
+    旧实现是 build_users(prefix, max(并发*2, args.users, 8))，显式 --users 会被
+    「并发*2」吃掉 —— 结果 `--users 1 --concurrency 20` 实际仍建 40 个 userId，
+    压不到「同一 userId 并发建号幂等」这条路径（C-02 本意所在）。现改为显式优先。
+    """
+    if explicit and explicit > 0:
+        return explicit
+    return max(auto_floor, 50)
+
+
+# 上游背压错误码（与 modules/gateway.py 对齐）：属「正确拒绝」，不该计入服务端失败
+UPSTREAM_CODES = ("AI_UPSTREAM_LIMITED", "AI_UPSTREAM_UNAVAILABLE")
+
+
+def is_upstream_body(text: str) -> bool:
+    """非 2xx 响应体是否标注了上游背压（{detail, code} 里的 code）。"""
+    try:
+        return (json.loads(text) or {}).get("code") in UPSTREAM_CODES
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def kid_marks(users: list[dict]) -> dict[str, str]:
@@ -272,9 +302,10 @@ async def call_query(
                 detail="" if data.get("answer") else "空答案",
             )
         if r.status_code in (409, 429, 503):
+            up = is_upstream_body(r.text)
             return CallResult(
                 endpoint="query", user_id=user["userId"], status=r.status_code, ok=False,
-                rejected=True, total_ms=ms, detail=r.text[:160],
+                rejected=True, upstream_limited=up, total_ms=ms, detail=r.text[:160],
             )
         return CallResult(
             endpoint="query", user_id=user["userId"], status=r.status_code, ok=False,
@@ -304,6 +335,7 @@ async def call_stream(
     answer_parts: list[str] = []
     terminal = "none"
     error_type = ""
+    error_code = ""
     status = 0
     try:
         async with client.stream(
@@ -315,7 +347,8 @@ async def call_stream(
                 text = (await resp.aread()).decode("utf-8", "ignore")[:160]
                 return CallResult(
                     endpoint="stream", user_id=user["userId"], status=status, ok=False,
-                    rejected=status in (409, 429, 503), total_ms=(time.perf_counter() - t0) * 1000,
+                    rejected=status in (409, 429, 503), upstream_limited=is_upstream_body(text),
+                    total_ms=(time.perf_counter() - t0) * 1000,
                     sse_terminal="none", detail=text,
                 )
             event = ""
@@ -343,6 +376,7 @@ async def call_stream(
                 elif event == "error":
                     terminal = "error"
                     error_type = str(data.get("error_type") or data.get("detail") or "")[:120]
+                    error_code = str(data.get("code") or "")
     except Exception as e:  # noqa: BLE001
         return CallResult(
             endpoint="stream", user_id=user["userId"], status=status, ok=False,
@@ -352,11 +386,16 @@ async def call_stream(
 
     ms = (time.perf_counter() - t0) * 1000
     answer = "".join(answer_parts)
+    # 上游背压的 SSE error 终态（HTTP 仍 200）按「正确拒绝」计，不计入服务端失败：
+    # 服务端已用 code=AI_UPSTREAM_* 明示这是模型侧容量问题（2026-09-10 修复）。
+    upstream = terminal == "error" and error_code in UPSTREAM_CODES
     ok = terminal == "done" and bool(answer)
     return CallResult(
         endpoint="stream", user_id=user["userId"], status=status, ok=ok,
+        rejected=upstream, upstream_limited=upstream,
         error_type=error_type, ttft_ms=ttft or ms, total_ms=ms, answer=answer,
-        sse_terminal=terminal, detail="" if ok else f"terminal={terminal} {error_type}",
+        sse_terminal=terminal,
+        detail="" if ok else f"terminal={terminal} {error_code or error_type}",
     )
 
 
@@ -395,6 +434,9 @@ def pick_endpoint(mode: str, sse_ratio: float, crud_ratio: float) -> str:
     if mode == "crud":
         pool = ["register", "update", "profile"]
         return pool[int(r * len(pool)) % len(pool)]
+    if mode == "writes":
+        # 只打两个写接口（register / update），不含只读的 /api/mp/profile
+        return "register" if r < 0.5 else "update"
     if mode == "mixed":
         return "stream" if r < sse_ratio else "query"
     # all：query 类占 (1-crud_ratio)，其余 CRUD
@@ -449,7 +491,7 @@ async def wait_drain(client, url: str, timeout: float = 20.0) -> dict:
 # ---------------------------------------------------------------- 模式实现
 async def mode_steady(args) -> Metrics:
     metrics = Metrics()
-    users = build_users(args.user_prefix, max(args.concurrency * 2, args.users, 8))
+    users = build_users(args.user_prefix, args.user_pool)
     marks = kid_marks(users)
     limits = httpx.Limits(max_connections=args.concurrency + 20, max_keepalive_connections=args.concurrency + 20)
     async with httpx.AsyncClient(limits=limits, timeout=args.timeout) as client:
@@ -491,7 +533,7 @@ async def mode_steady(args) -> Metrics:
 async def mode_boundary(args) -> Metrics:
     """同步起跑 N 个请求：验证槽位/队列/拒绝数量。"""
     metrics = Metrics()
-    users = build_users(args.user_prefix, max(args.level, args.users, 8))
+    users = build_users(args.user_prefix, args.user_pool)
     marks = kid_marks(users)
     limits = httpx.Limits(max_connections=args.level + 20, max_keepalive_connections=args.level + 20)
     async with httpx.AsyncClient(limits=limits, timeout=args.timeout) as client:
@@ -525,7 +567,7 @@ async def mode_boundary(args) -> Metrics:
 
 async def mode_spike(args) -> Metrics:
     metrics = Metrics()
-    users = build_users(args.user_prefix, max(args.level * 2, args.users, 8))
+    users = build_users(args.user_prefix, args.user_pool)
     marks = kid_marks(users)
     limits = httpx.Limits(max_connections=args.level + 20, max_keepalive_connections=args.level + 20)
     async with httpx.AsyncClient(limits=limits, timeout=args.timeout) as client:
@@ -591,12 +633,21 @@ def judge(args, d: dict) -> tuple[bool, list[str]]:
     if server_err:
         fails.append(f"5xx 响应 {server_err} 次")
 
-    # CRUD-only 模式要求零失败
-    if args.endpoint == "crud":
+    # 轻量写接口模式（crud / writes）要求零失败：它们不走准入，不存在 409/429 的合理拒绝
+    if args.endpoint in ("crud", "writes"):
         if ov["fail"] or ov["rejected"]:
-            fails.append(f"CRUD 模式出现失败/拒绝：fail={ov['fail']} rejected={ov['rejected']}")
+            tag = "CRUD" if args.endpoint == "crud" else "写接口"
+            fails.append(f"{tag}模式出现失败/拒绝：fail={ov['fail']} rejected={ov['rejected']}")
     else:
-        if ov["success_rate"] < args.min_success:
+        admitted = ov["requests"] - ov["rejected"]
+        if ov["requests"] and admitted == 0:
+            # 全被拒（典型：上游背压把 503/SSE error 拉满）→ 成功率分母为 0，
+            # 若照常比门槛会打印误导性的「成功率 0%」，这里给出真实原因。
+            fails.append(
+                f"没有任何请求被放行（requests={ov['requests']} 全部被拒，其中上游背压 "
+                f"{ov.get('upstream_limited', 0)} 次）—— 本次结果无效，勿据此下并发结论"
+            )
+        elif ov["success_rate"] < args.min_success:
             fails.append(f"成功率 {ov['success_rate']}% < 门槛 {args.min_success}%")
         if args.max_total_p95 and ov["total_ms"]["p95"] > args.max_total_p95:
             fails.append(f"完整响应 P95 {ov['total_ms']['p95']}ms > 门槛 {args.max_total_p95}ms")
@@ -615,13 +666,22 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="微信小程序通道 /api/mp/* 并发压测")
     p.add_argument("--url", default="http://127.0.0.1:8000")
     p.add_argument("--api-key", default=os.getenv("MP_API_KEY", ""), help="与 .env 的 MP_API_KEY 一致；为空则不带 X-API-Key")
-    p.add_argument("--endpoint", choices=("query", "stream", "mixed", "crud", "all"), default="mixed")
+    p.add_argument(
+        "--endpoint",
+        choices=("query", "stream", "mixed", "writes", "crud", "all"),
+        default="mixed",
+    )
     p.add_argument("--sse-ratio", type=float, default=0.5, help="mixed/all 中流式占比")
     p.add_argument("--crud-ratio", type=float, default=0.2, help="all 模式中 CRUD 接口占比")
     p.add_argument("--question", default=DEFAULT_QUESTION)
     p.add_argument("--reuse-question", action="store_true", help="不追加唯一标记（会命中 embedding 缓存，仅缓存测试用）")
     p.add_argument("--user-prefix", default="mpc")
-    p.add_argument("--users", type=int, default=0, help="userId 池大小；0=自动取 max(并发*2, 50)")
+    p.add_argument(
+        "--users",
+        type=int,
+        default=0,
+        help="userId 池大小；0=自动取 max(并发*2, 50)；显式值原样生效（压同一 userId 用 1）",
+    )
     p.add_argument("--timeout", type=float, default=120.0)
     p.add_argument("--poll-ms", type=float, default=50.0)
     p.add_argument("--output", default="results/mp-concurrency-latest.json")
@@ -649,11 +709,19 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     random.seed(args.seed)
-    if args.users == 0:
-        args.users = 50
+    level = args.concurrency if args.mode == "steady" else args.level
+    auto_floor = level * 2 if args.mode in ("steady", "spike") else level
+    args.user_pool = resolve_user_pool(args.users, auto_floor)
 
     print(f"[mp-concurrency] 目标 {args.url}  endpoint={args.endpoint}  mode={args.mode}")
     print(f"[mp-concurrency] API-Key: {'已配置' if args.api_key else '未配置（服务端 MP_API_KEY 为空时才允许）'}")
+    print(f"[mp-concurrency] userId 池 = {args.user_pool}"
+          + ("（--users 显式指定）" if args.users else "（自动）"))
+    if args.user_pool < level and args.endpoint not in ("crud", "writes"):
+        print(
+            f"[mp-concurrency] 注意：池 {args.user_pool} < 并发 {level}，同一 userId 会在途撞 409；"
+            "只有 crud 模式（不走准入）适合这样压"
+        )
 
     if args.mode == "steady":
         metrics = asyncio.run(mode_steady(args))
@@ -689,7 +757,10 @@ def main() -> int:
           f"queued={ov['admission']['queued_peak']}/{ov['admission']['max_queue_cfg']}")
     for ep, s in d["endpoints"].items():
         print(f"  - {ep}: total={s['total']} ok={s['ok']} fail={s['fail']} rej={s['rejected']} "
-              f"rate={s['success_rate']}% status={s['status_dist']}")
+              f"up={s.get('upstream_limited', 0)} rate={s['success_rate']}% status={s['status_dist']}")
+    if ov.get("upstream_limited"):
+        print(f"  ※ 其中「上游模型背压」{ov['upstream_limited']} 次（503 / SSE error + AI_UPSTREAM_*）："
+              f"已计入「拒绝」不计失败，属模型侧容量问题，非服务端缺陷")
     print("--------------------------------------")
     if ok:
         print("最终结论：通过")

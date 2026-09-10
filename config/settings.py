@@ -90,7 +90,16 @@ class Settings:
     # 约束：必须严格大于 AI_QUEUE_WAIT_TIMEOUT_SECONDS（validate() 强制），
     # 使「慢 LLM 仍在正常等待」与「排队者 30s 超时」两个语义解耦。
     LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
-    LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
+    # 重试次数：默认 0（关闭 openai SDK 的内建重试）。
+    # 2026-09-10 压测实测结论：SDK 的 max_retries 对**所有**可重试错误一视同仁，
+    # 其中对上游 429 的重试是有害的 —— 重试本身也是请求，等于自己放大 RPM 压力；
+    # 且 SDK 退避只有 0.4~1.0s，几乎必然落在同一个限流窗口里再次被拒，同时把单请求
+    # 在途时间从 ~2s 拉到 3~3.7s，进而让「单用户在途」撞出更多 409。
+    # 现在 429/5xx 由端点分类为 503 + Retry-After（modules/gateway.classify_upstream_error），
+    # 由调用方/客户端按 Retry-After 退避——这是正确的背压位置。
+    # 若确有瞬时网络抖动需要韧性，把它调成 1~2 即可（小步慢退避），或后续补
+    # 「应用层重试但排除 429」的实现。
+    LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "0"))
     # embedding 客户端超时（安全 L1/记忆/检索共用；默认 30s 保持原行为，可 env 覆盖）
     EMBEDDING_TIMEOUT_SECONDS = float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "30"))
 
