@@ -88,6 +88,8 @@ function renderAuthView() {
   const isRegister = authMode === "register";
   root.innerHTML = `
     <div class="auth-shell">
+      <a class="home-link auth-home" href="/">← 返回首页</a>
+      <section class="auth-intro" aria-label="欢迎"><span class="intro-kicker">青少年心理问答</span><h2>给心事，<br>一点说出来的空间。</h2><p>关于成长、学习和家庭的小困惑，<br>可以从你愿意分享的那一点开始。</p><div class="intro-plant" aria-hidden="true"><span></span><span></span><span></span></div><p class="intro-caption">不必一次说清楚，我们慢慢聊。</p></section>
       <div class="auth-bg" aria-hidden="true">
         <span class="blob blob-a"></span>
         <span class="blob blob-b"></span>
@@ -95,8 +97,8 @@ function renderAuthView() {
       </div>
       <div class="auth-card" data-mode="${authMode}">
         <div class="auth-logo">${LOGO_SVG}</div>
-        <h1 class="auth-title">心理 RAG</h1>
-        <p class="auth-sub">${isRegister ? "创建账号，开始使用对话联调" : "青少年心理知识问答 · 温暖、专业、值得信任"}</p>
+        <h1 class="auth-title">${isRegister ? "创建你的账号" : "欢迎回来"}</h1>
+        <p class="auth-sub">${isRegister ? "注册后，开始你的第一段对话" : "登录后，继续你的对话与记录"}</p>
         <form id="auth-form" novalidate>
           <div class="auth-field">
             <label class="form-label" for="auth-username">用户名</label>
@@ -129,8 +131,8 @@ function renderAuthView() {
           </button>
         </form>
         <div class="auth-divider"><span>或</span></div>
-        <button class="auth-toggle" id="auth-toggle" type="button">${isRegister ? "已有账号？立即登录" : "还没有账号？免费注册"}</button>
-        <p class="auth-foot">登录即表示同意《服务协议》与《隐私政策》（占位文案）</p>
+        <button class="auth-toggle" id="auth-toggle" type="button">${isRegister ? "已有账号？立即登录" : "还没有账号？创建账号"}</button>
+        <p class="auth-foot">对话记录保存在服务器，可在登录后查看。<br>AI 提供心理科普与支持，不能替代专业诊疗。</p>
       </div>
       <div id="toast" class="toast hidden"></div>
     </div>`;
@@ -355,8 +357,8 @@ function renderShell() {
   document.querySelector("#app").innerHTML = `
     <div class="app-shell">
       <header class="topbar">
-        <div class="brand"><div class="brand-mark">✦</div><div><div class="brand-name">心理 RAG</div><div class="brand-sub">对话联调</div></div></div>
-        <div class="top-actions">
+        <div class="brand"><div class="brand-mark">✦</div><div><div class="brand-name">青少年心理问答</div><div class="brand-sub">给心事一点空间</div></div></div>
+        <div class="top-actions"><a class="home-link" href="/">返回首页</a>
           <span class="user-chip" id="user-chip">${escapeHtml(state.currentUser?.display_name || state.currentUser?.username || "")}</span>
           <button class="ghost-btn" id="logout-btn" type="button" title="退出登录">退出</button>
           <span id="conn" class="conn"><span class="dot"></span><span class="label">连接中…</span></span>
@@ -383,8 +385,8 @@ function renderChat() {
     page.innerHTML = `
       <div class="welcome">
         <div class="bot-avatar">✦</div>
-        <h2>还没有对话</h2>
-        <p>点击下面按钮开始一段新的对话，所有内容都会保存在服务端数据库。</p>
+        <h2>你好，今天想聊些什么？</h2>
+        <p>从一件小事开始也可以。创建对话后，你可以随时回来继续聊。</p>
         <button class="primary-btn" id="empty-new">＋ 新建对话</button>
       </div>`;
     page.querySelector("#empty-new").addEventListener("click", createSession);
@@ -398,42 +400,47 @@ function renderChat() {
   const draft = prevInput ? prevInput.value : "";
   page.innerHTML = `
     <div class="chat-layout">
-      <aside class="sidebar">
+      <aside class="sidebar" id="chat-history" aria-label="对话记录">
         <div class="section-title"><span>对话</span><button class="icon-btn" id="new-session" title="新建对话">＋</button></div>
         <div class="session-list">${state.sessions.map((s) => renderSessionItem(s, session.id)).join("")}</div>
       </aside>
-      <section class="chat-main">
-        <div class="chat-toolbar">
+      <section class="chat-main" aria-label="当前对话">
+        <div class="chat-toolbar"><button class="ghost-btn history-toggle" id="history-toggle" type="button" aria-expanded="false" aria-controls="chat-history">对话记录</button>
           <strong>${escapeHtml(session.name)}</strong>
-          <span class="model-chip"><i class="model-dot"></i>RAG 问答</span>
+          <span class="model-chip"><i class="model-dot"></i>心理支持</span>
           <span class="heading-spacer"></span>
           <button class="ghost-btn" id="rename-session">重命名</button>
           <button class="ghost-btn" id="export-session">导出</button>
         </div>
         <div class="message-list" id="message-list" aria-live="polite">${messages.length ? messages.map(renderMessage).join("") : renderWelcome()}</div>
         <form class="composer" id="chat-form">
-          <textarea id="chat-input" rows="1" placeholder="输入问题，按 Enter 发送，Shift + Enter 换行"></textarea>
+          <textarea id="chat-input" rows="1" aria-label="想说的话" aria-describedby="composer-note" placeholder="写下你想聊的事，不用急着组织好语言…"></textarea>
           <div class="composer-actions">
             <button class="stop-btn is-hidden" id="stop-btn" type="button" title="停止生成（取消排队或中断回答）" aria-label="停止生成">■</button>
             <button class="send-btn" id="send-btn" type="submit" title="发送" aria-label="发送">↑</button>
           </div>
         </form>
+        <p class="composer-note" id="composer-note">AI 回答仅供参考，不替代专业诊疗。<span>Enter 发送 · Shift + Enter 换行</span></p>
       </section>
       <aside class="inspector">
-        <div class="section-title"><span>本次对话配置</span></div>
+        <div class="section-title"><span>慢慢聊，没关系</span></div>
         <div class="inspector-body">
           <div class="info-block">
-            <h3>使用提示词</h3>
-            <div class="prompt-preview">系统默认提示词<br/>（由管理员在数据库中配置，用户不可修改）</div>
+            <h3>从你的感受开始</h3>
+            <div class="prompt-preview">你可以说说发生了什么，以及它带给你的感受。不需要一次说完，也可以随时停止回答。</div>
           </div>
           <div class="info-block">
-            <h3>请求状态</h3>
-            <div class="info-row"><span>后端连接</span><strong id="insp-conn">检测中</strong></div>
+            <h3>连接状态</h3>
+            <div class="info-row"><span>问答服务</span><strong id="insp-conn">检测中</strong></div>
           </div>
         </div>
       </aside>
     </div>`;
 
+  page.querySelector("#history-toggle").addEventListener("click", (e) => {
+    const open = page.querySelector(".chat-layout").classList.toggle("history-open");
+    e.currentTarget.setAttribute("aria-expanded", String(open));
+  });
   const restoredInput = page.querySelector("#chat-input");
   if (restoredInput && draft) {
     restoredInput.value = draft;
@@ -463,7 +470,7 @@ function renderChat() {
   };
   chatInput.addEventListener("input", autoGrow);
   form.addEventListener("submit", async (e) => { e.preventDefault(); const content = chatInput.value.trim(); if (!content) return; chatInput.value = ""; chatInput.style.height = "auto"; await sendChat(content); });
-  chatInput.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
+  chatInput.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); form.requestSubmit(); } });
   // 欢迎页快捷问题：点击后直接填入输入框并发送
   page.querySelectorAll(".suggestion").forEach((b) => b.addEventListener("click", () => {
     const input = page.querySelector("#chat-input");
@@ -488,7 +495,7 @@ function renderSessionItem(s, activeId) {
 }
 
 function renderWelcome() {
-  return `<div class="welcome"><div class="bot-avatar">✦</div><h2>开始一段新的对话</h2><p>这里调用后端 RAG 问答接口，回答基于知识库与系统默认提示词生成。</p><div class="suggestions"><button class="suggestion">孩子总说睡不着，怎么沟通？</button><button class="suggestion">考试前焦虑怎么办？</button><button class="suggestion">如何判断是否需要专业帮助？</button></div></div>`;
+  return `<div class="welcome"><div class="bot-avatar" aria-hidden="true">✦</div><span class="welcome-kicker">在这里，慢慢说</span><h2>今天，什么事让你挂心？</h2><p>可以是学习的压力、人际关系，或一个说不清的感受。<br>从你愿意分享的地方开始。</p><div class="suggestions"><button class="suggestion" type="button">考试前总是很紧张，怎么办？</button><button class="suggestion" type="button">和朋友闹矛盾了，怎么开口？</button><button class="suggestion" type="button">孩子总说睡不着，怎么沟通？</button><button class="suggestion" type="button">如何判断是否需要专业帮助？</button></div></div>`;
 }
 
 function renderSourceChips(sources) {
@@ -527,7 +534,7 @@ function appendStreamingBubble() {
   div.className = "message assistant";
   // 文本独立放进 .streaming-text，来源 chips / 耗时栏是它的兄弟节点（token 更新只改
   // 文本节点，不误清来源）。排队状态行 .queue-status 独立展示，放行后隐藏。
-  div.innerHTML = '<div><div class="message-meta">心理 RAG</div><div class="message-bubble"><span class="queue-status is-hidden"></span><span class="streaming-text">正在生成…</span></div></div>';
+  div.innerHTML = '<div><div class="message-meta">心理问答</div><div class="message-bubble"><span class="queue-status is-hidden"></span><span class="streaming-text">正在生成…</span></div></div>';
   list.appendChild(div);
   list.scrollTop = list.scrollHeight;
   return { bubble: div.querySelector(".message-bubble"), textEl: div.querySelector(".streaming-text"), statusEl: div.querySelector(".queue-status") };

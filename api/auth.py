@@ -2,7 +2,6 @@
 
 - 密码 bcrypt 哈希存储（modules.security），绝不存明文；
 - 登录失败限流（内存级：连续失败锁定 15 分钟，防暴力破解）；
-- 登录失败统一文案"用户名或密码错误"，不暴露用户名是否存在；
 - JWT access token：HS256，默认 2h（settings.JWT_EXPIRE_MINUTES）。
 """
 import re
@@ -24,13 +23,12 @@ from .deps import get_current_user
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 # 登录失败记录：username -> deque[(ts)]，窗口内失败超限则锁定账号
-# 注意：存在与否的 username **同代价计数**（消除「429 只出现在存在用户」的存在性探针）
 _login_fails: dict[str, deque] = defaultdict(deque)
-# IP 维度失败累计：同 IP 换用户名逐个试时累计超限 → 锁 IP（兜 username 锁的盲区）
+# IP 维度失败累计：同 IP 换用户名逐个试时累计超限 → 锁 IP
 _login_ip_fails: dict[str, deque] = defaultdict(deque)
 # 登录请求整体限流（频率）：IP -> deque（防止单 IP 爆破）
 _login_ip: dict[str, deque] = defaultdict(deque)
-# 注册请求限流：IP -> deque（register 此前无限流，可被批量注册刷 bcrypt/DB）
+# 注册请求限流：IP -> deque
 _register_ip: dict[str, deque] = defaultdict(deque)
 
 _last_sweep = 0.0  # 上次空桶清扫时间（限流桶键回收用）

@@ -2,6 +2,9 @@
 FastAPI服务接口
 提供RESTful API供前端调用
 """
+import asyncio
+asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 import sys
 import os
 import atexit
@@ -10,7 +13,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-# 确保无论从哪个工作目录启动（如 `python api/main.py`），
 # 项目根都在 sys.path 上，使 `from config.settings` / `from modules` 稳定可用。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -18,9 +20,8 @@ import time
 import logging
 from collections import defaultdict, deque
 
-# 日志基础（2026-09-07 起）：根 logger 统一时间戳/级别/来源格式；业务模块用
+# 日志基础：根 logger 统一时间戳/级别/来源格式；业务模块用
 # logger=logging.getLogger("rag.api") 记录（uvicorn 自带 access/error logger 不受影响）。
-# 遗留 print 将随改动逐步迁移（96 处，非功能性，低风险分批替换）。
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
