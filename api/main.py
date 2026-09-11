@@ -2,10 +2,20 @@
 FastAPI服务接口
 提供RESTful API供前端调用
 """
-import asyncio
-asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
 import sys
+import asyncio
+
+# Windows 兼容：psycopg(async) 要求 SelectorEventLoop，而 Windows 默认 ProactorEventLoop
+# 不兼容（sqlalchemy psycopg async / greenlet 会抛 InterfaceError）。模块 import 时统一
+# 切换到 Selector 策略，保证 uvicorn 与脚本里创建的 asyncio 循环都可跑 async engine。
+# ⚠️ 必须按平台守卫：WindowsSelectorEventLoopPolicy 仅存在于 Windows，
+# Linux/macOS 上直接调用会抛 AttributeError，导致服务启动即崩。
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except AttributeError:  # 极老 Python 版本无此策略
+        pass
+
 import os
 import atexit
 import socket

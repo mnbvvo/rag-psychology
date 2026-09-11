@@ -1,0 +1,53 @@
+{
+  "mirror_login": {
+    "http_status": 200,
+    "token_issued": true
+  },
+  "session_race": {
+    "both_initial_prechecks_pass": true,
+    "owner": "audit_A",
+    "other_user_message_written": true,
+    "message_count": 4,
+    "rollback_verified": true
+  },
+  "critical_persistence_failure": {
+    "returned_normally": true,
+    "counter_incremented": true
+  },
+  "safety_downgrade": {
+    "semantic_high_final_level": "medium",
+    "safety_global_enabled": false
+  },
+  "mp_response_after_db_failure": {
+    "success_body": true,
+    "persistence_error_exposed": false
+  },
+  "memory_failure_metrics": {
+    "completed": 1,
+    "failed": 0
+  },
+  "disabled_mirror": {
+    "guard_accepts": true
+  },
+  "pool_before_admission": {
+    "third_http_status": 500,
+    "active": 1,
+    "queued": 1,
+    "queue_capacity": 2,
+    "checked_out_connections": 2
+  },
+  "health_db_down": {
+    "http_status": 200,
+    "status": "degraded"
+  },
+  "login_bucket_cap": {
+    "configured_cap": 2,
+    "actual_buckets": 5
+  },
+  "db_password_url_encoding": {
+    "host_parsed_correctly": false
+  },
+  "linux_entrypoint": {
+    "exception": "AttributeError"
+  }
+}

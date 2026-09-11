@@ -1,0 +1,101 @@
+{
+  "endpoints": {
+    "register": {
+      "total": 5576,
+      "ok": 5576,
+      "fail": 0,
+      "rejected": 0,
+      "upstream_limited": 0,
+      "status_dist": {
+        "201": 5576
+      },
+      "success_rate": 100.0,
+      "total_ms": {
+        "p50": 97.6,
+        "p95": 161.5,
+        "p99": 293.2,
+        "max": 785.9
+      },
+      "ttft_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "max": 0.0
+      }
+    },
+    "update": {
+      "total": 5497,
+      "ok": 5497,
+      "fail": 0,
+      "rejected": 0,
+      "upstream_limited": 0,
+      "status_dist": {
+        "200": 5497
+      },
+      "success_rate": 100.0,
+      "total_ms": {
+        "p50": 97.8,
+        "p95": 157.9,
+        "p99": 279.3,
+        "max": 770.0
+      },
+      "ttft_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "max": 0.0
+      }
+    }
+  },
+  "overall": {
+    "requests": 11073,
+    "ok": 11073,
+    "fail": 0,
+    "rejected": 0,
+    "upstream_limited": 0,
+    "success_rate": 100.0,
+    "total_ms": {
+      "p50": 97.6,
+      "p95": 159.1,
+      "p99": 287.6,
+      "max": 785.9
+    },
+    "ttft_ms": {
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "admission": {
+      "max_active_cfg": 20,
+      "max_queue_cfg": 40,
+      "active_peak": 0,
+      "queued_peak": 0
+    },
+    "isolation_violations": 0
+  },
+  "drain_final": {
+    "backend": "memory",
+    "max_active": 20,
+    "active": 0,
+    "max_queue": 40,
+    "queued": 0,
+    "accepting": true
+  },
+  "users": 50,
+  "meta": {
+    "url": "http://127.0.0.1:8000",
+    "endpoint_mode": "writes",
+    "mode": "steady",
+    "sse_ratio": 0.5,
+    "crud_ratio": 0.2,
+    "question": "我孩子最近写作业很磨蹭，一提作业就发脾气，我该怎么引导他？",
+    "seed": 20260909,
+    "started_at": "2026-09-10 15:15:01",
+    "python": "3.13.14"
+  },
+  "verdict": {
+    "pass": true,
+    "fails": []
+  }
+}

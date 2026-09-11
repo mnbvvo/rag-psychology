@@ -1,0 +1,103 @@
+{
+  "endpoints": {
+    "query": {
+      "total": 73,
+      "ok": 48,
+      "fail": 0,
+      "rejected": 25,
+      "upstream_limited": 0,
+      "status_dist": {
+        "200": 48,
+        "409": 25
+      },
+      "success_rate": 100.0,
+      "total_ms": {
+        "p50": 2106.9,
+        "p95": 3139.5,
+        "p99": 3308.1,
+        "max": 3732.4
+      },
+      "ttft_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "max": 0.0
+      }
+    },
+    "stream": {
+      "total": 106,
+      "ok": 77,
+      "fail": 0,
+      "rejected": 29,
+      "upstream_limited": 0,
+      "status_dist": {
+        "409": 29,
+        "200": 77
+      },
+      "success_rate": 100.0,
+      "total_ms": {
+        "p50": 2190.4,
+        "p95": 3103.1,
+        "p99": 3737.0,
+        "max": 4488.0
+      },
+      "ttft_ms": {
+        "p50": 897.9,
+        "p95": 1088.7,
+        "p99": 1481.0,
+        "max": 1671.5
+      }
+    }
+  },
+  "overall": {
+    "requests": 179,
+    "ok": 125,
+    "fail": 0,
+    "rejected": 54,
+    "upstream_limited": 0,
+    "success_rate": 100.0,
+    "total_ms": {
+      "p50": 2182.9,
+      "p95": 3113.7,
+      "p99": 3732.4,
+      "max": 4488.0
+    },
+    "ttft_ms": {
+      "p50": 897.9,
+      "p95": 1088.7,
+      "p99": 1481.0,
+      "max": 1671.5
+    },
+    "admission": {
+      "max_active_cfg": 20,
+      "max_queue_cfg": 40,
+      "active_peak": 5,
+      "queued_peak": 0
+    },
+    "isolation_violations": 0
+  },
+  "drain_final": {
+    "backend": "memory",
+    "max_active": 20,
+    "active": 0,
+    "max_queue": 40,
+    "queued": 0,
+    "accepting": true
+  },
+  "users": 50,
+  "meta": {
+    "url": "http://127.0.0.1:8000",
+    "endpoint_mode": "mixed",
+    "mode": "steady",
+    "sse_ratio": 0.5,
+    "crud_ratio": 0.2,
+    "question": "我孩子最近写作业很磨蹭，一提作业就发脾气，我该怎么引导他？",
+    "seed": 20260909,
+    "started_at": "2026-09-10 14:35:26",
+    "python": "3.13.14"
+  },
+  "verdict": {
+    "pass": true,
+    "fails": []
+  }
+}

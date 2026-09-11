@@ -1,0 +1,81 @@
+{
+  "endpoints": {
+    "stream": {
+      "total": 10597,
+      "ok": 1,
+      "fail": 6966,
+      "rejected": 3630,
+      "upstream_limited": 0,
+      "status_dist": {
+        "200": 6967,
+        "409": 3630
+      },
+      "success_rate": 0.01,
+      "total_ms": {
+        "p50": 331.4,
+        "p95": 820.0,
+        "p99": 1572.4,
+        "max": 3297.9
+      },
+      "ttft_ms": {
+        "p50": 353.6,
+        "p95": 1395.9,
+        "p99": 1613.2,
+        "max": 2687.9
+      }
+    }
+  },
+  "overall": {
+    "requests": 10597,
+    "ok": 1,
+    "fail": 6966,
+    "rejected": 3630,
+    "upstream_limited": 0,
+    "success_rate": 0.01,
+    "total_ms": {
+      "p50": 331.4,
+      "p95": 820.0,
+      "p99": 1572.4,
+      "max": 3297.9
+    },
+    "ttft_ms": {
+      "p50": 353.6,
+      "p95": 1395.9,
+      "p99": 1613.2,
+      "max": 2687.9
+    },
+    "admission": {
+      "max_active_cfg": 20,
+      "max_queue_cfg": 40,
+      "active_peak": 20,
+      "queued_peak": 0
+    },
+    "isolation_violations": 0
+  },
+  "drain_final": {
+    "backend": "memory",
+    "max_active": 20,
+    "active": 0,
+    "max_queue": 40,
+    "queued": 0,
+    "accepting": true
+  },
+  "users": 50,
+  "meta": {
+    "url": "http://127.0.0.1:8000",
+    "endpoint_mode": "stream",
+    "mode": "steady",
+    "sse_ratio": 0.5,
+    "crud_ratio": 0.2,
+    "question": "我孩子最近写作业很磨蹭，一提作业就发脾气，我该怎么引导他？",
+    "seed": 20260909,
+    "started_at": "2026-09-10 14:45:00",
+    "python": "3.13.14"
+  },
+  "verdict": {
+    "pass": false,
+    "fails": [
+      "成功率 0.01% < 门槛 99.0%"
+    ]
+  }
+}

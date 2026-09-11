@@ -1,0 +1,84 @@
+{
+  "endpoints": {
+    "query": {
+      "total": 8327,
+      "ok": 827,
+      "fail": 1712,
+      "rejected": 5788,
+      "upstream_limited": 2689,
+      "status_dist": {
+        "503": 2689,
+        "409": 3099,
+        "200": 827,
+        "500": 1712
+      },
+      "success_rate": 32.57,
+      "total_ms": {
+        "p50": 258.0,
+        "p95": 2473.3,
+        "p99": 2977.9,
+        "max": 4833.1
+      },
+      "ttft_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "max": 0.0
+      }
+    }
+  },
+  "overall": {
+    "requests": 8327,
+    "ok": 827,
+    "fail": 1712,
+    "rejected": 5788,
+    "upstream_limited": 2689,
+    "success_rate": 32.57,
+    "total_ms": {
+      "p50": 258.0,
+      "p95": 2473.3,
+      "p99": 2977.9,
+      "max": 4833.1
+    },
+    "ttft_ms": {
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "admission": {
+      "max_active_cfg": 20,
+      "max_queue_cfg": 40,
+      "active_peak": 20,
+      "queued_peak": 0
+    },
+    "isolation_violations": 0
+  },
+  "drain_final": {
+    "backend": "memory",
+    "max_active": 20,
+    "active": 0,
+    "max_queue": 40,
+    "queued": 0,
+    "accepting": true
+  },
+  "users": 50,
+  "meta": {
+    "url": "http://127.0.0.1:8000",
+    "endpoint_mode": "query",
+    "mode": "steady",
+    "sse_ratio": 0.5,
+    "crud_ratio": 0.2,
+    "question": "我孩子最近写作业很磨蹭，一提作业就发脾气，我该怎么引导他？",
+    "seed": 20260909,
+    "started_at": "2026-09-10 14:41:52",
+    "python": "3.13.14"
+  },
+  "verdict": {
+    "pass": false,
+    "fails": [
+      "5xx 响应 1712 次",
+      "成功率 32.57% < 门槛 99.0%"
+    ]
+  }
+}

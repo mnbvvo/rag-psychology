@@ -1,0 +1,103 @@
+{
+  "endpoints": {
+    "stream": {
+      "total": 403,
+      "ok": 266,
+      "fail": 0,
+      "rejected": 137,
+      "upstream_limited": 0,
+      "status_dist": {
+        "200": 266,
+        "409": 137
+      },
+      "success_rate": 100.0,
+      "total_ms": {
+        "p50": 2269.6,
+        "p95": 3371.1,
+        "p99": 4111.7,
+        "max": 4502.9
+      },
+      "ttft_ms": {
+        "p50": 928.4,
+        "p95": 1212.4,
+        "p99": 2059.1,
+        "max": 2625.2
+      }
+    },
+    "query": {
+      "total": 330,
+      "ok": 202,
+      "fail": 0,
+      "rejected": 128,
+      "upstream_limited": 0,
+      "status_dist": {
+        "200": 202,
+        "409": 128
+      },
+      "success_rate": 100.0,
+      "total_ms": {
+        "p50": 2194.9,
+        "p95": 3330.0,
+        "p99": 3741.2,
+        "max": 4182.5
+      },
+      "ttft_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "max": 0.0
+      }
+    }
+  },
+  "overall": {
+    "requests": 733,
+    "ok": 468,
+    "fail": 0,
+    "rejected": 265,
+    "upstream_limited": 0,
+    "success_rate": 100.0,
+    "total_ms": {
+      "p50": 2251.5,
+      "p95": 3353.6,
+      "p99": 3900.5,
+      "max": 4502.9
+    },
+    "ttft_ms": {
+      "p50": 928.4,
+      "p95": 1212.4,
+      "p99": 2059.1,
+      "max": 2625.2
+    },
+    "admission": {
+      "max_active_cfg": 20,
+      "max_queue_cfg": 40,
+      "active_peak": 20,
+      "queued_peak": 0
+    },
+    "isolation_violations": 0
+  },
+  "drain_final": {
+    "backend": "memory",
+    "max_active": 20,
+    "active": 0,
+    "max_queue": 40,
+    "queued": 0,
+    "accepting": true
+  },
+  "users": 50,
+  "meta": {
+    "url": "http://127.0.0.1:8000",
+    "endpoint_mode": "mixed",
+    "mode": "steady",
+    "sse_ratio": 0.5,
+    "crud_ratio": 0.2,
+    "question": "我孩子最近写作业很磨蹭，一提作业就发脾气，我该怎么引导他？",
+    "seed": 20260909,
+    "started_at": "2026-09-10 15:06:05",
+    "python": "3.13.14"
+  },
+  "verdict": {
+    "pass": true,
+    "fails": []
+  }
+}

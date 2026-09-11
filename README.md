@@ -26,7 +26,7 @@
 
 ### 0. 前置依赖
 
-- Python 3.11+（新环境装包慢可用国内镜像：`pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt`）
+- Python 3.12+（新环境装包慢可用国内镜像：`pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt`）
 - PostgreSQL（含 pgvector 扩展，见步骤 2）
 
 ### 1. 安装依赖

@@ -228,15 +228,14 @@ class Settings:
     HEALTH_PROBE_EMBEDDING = os.getenv("HEALTH_PROBE_EMBEDDING", "false").lower() in ("1", "true", "yes")
 
     # ============ 关系型数据库（结构化持久化：会话 / 消息 / 危机审计） ============
-    # 双后端：默认 SQLite（单文件、零部署，本地原型）；配置 PG_* 后自动切换 PostgreSQL。
     # 生产/多 worker 推荐 PostgreSQL：DB_BACKEND=postgres 时使用 postgresql+psycopg 驱动。
-    DB_BACKEND = os.getenv("DB_BACKEND", "sqlite")  # sqlite | postgres
+    DB_BACKEND = os.getenv("DB_BACKEND")  #postgres
     PG_HOST = os.getenv("PG_HOST", "127.0.0.1")
     PG_PORT = int(os.getenv("PG_PORT", "5432"))
     PG_USER = os.getenv("PG_USER", "postgres")
     PG_PASSWORD = os.getenv("PG_PASSWORD", "")
     PG_DB = os.getenv("PG_DB", "rag_psychology")
-    # 关系库连接池（总稿 §3.4/§6）：数值起步后按压测调；SQLite 忽略以下参数
+    # 关系库连接池（总稿 §3.4/§6）：数值起步后按压测调； 忽略以下参数
     DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "10"))          # async 主池常驻连接（请求路径）
     DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "20"))    # async 主池高峰临时连接
     DB_POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "30"))    # 无连接可借时的等待秒数
@@ -245,10 +244,8 @@ class Settings:
     DB_WORKER_MAX_OVERFLOW = int(os.getenv("DB_WORKER_MAX_OVERFLOW", "4"))
 
     _DB_PATH = _resolve_path("data/rag_psychology.sqlite3", _PROJECT_ROOT)
-    if DB_BACKEND == "postgres":
-        DB_URL = f"postgresql+psycopg://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DB}"
-    else:
-        DB_URL = f"sqlite:///{_DB_PATH.replace('\\', '/')}"
+
+    DB_URL = f"postgresql+psycopg://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DB}"
 
     # ============ 向量库（语义检索） ============
     # 双后端：pgvector（生产，向量存 PostgreSQL）| chroma（本地原型，data/chroma/）。
